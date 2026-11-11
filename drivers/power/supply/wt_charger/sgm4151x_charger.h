@@ -44,12 +44,9 @@
 /* Register 0x03*/
 #define SGM4151X_REG_03              0x03
 #define SGM4151X_IPRECHG_MASK        0xF0
-#define SGM4151X_ICSELECT_MASK       0x10
 #define SGM4151X_IPRECHG_SHIFT       4
 #define SGM4151X_IPRECHG_BASE        60
 #define SGM4151X_IPRECHG_LSB         60
-#define SGM4151X_SELECT_ENABLE       1
-#define SGM4151X_SELECT_DISENABLE    0
 
 #define SGM4151X_ITERM_MASK          0x0F
 #define SGM4151X_ITERM_SHIFT         0

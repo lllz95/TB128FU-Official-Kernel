@@ -12,12 +12,10 @@
 #define	DISABLE_BOARD_TEMP_CONTROL
 
 #define ATO_BATT_SOC_MAX	79
-#define ATO_BATT_SOC_MIN	75
+#define ATO_BATT_SOC_MIN	60
 
-#define BATT_PROTECT_SOC_MAX	103
-#define BATT_PROTECT_SOC_MIN	0
-#define BATT_PROTECT_SOC_CURRENT_LIMIT_FIRST	55
-#define BATT_PROTECT_SOC_CURRENT_LIMIT_SECOND	57
+#define BATT_PROTECT_SOC_MAX	60
+#define BATT_PROTECT_SOC_MIN	40
 
 #define BATT_MAINTAIN_SOC_MAX	80
 #define BATT_MAINTAIN_SOC_MIN	60
@@ -26,9 +24,6 @@
 #define SOC_ZERO_MAX	3
 #define BATT_CAPACITY_DEFAULT_VALUE 70
 #define CURRENT_ZERO_MAX	3
-#define MIN_SOC_CHANGE 1
-
-#define BATT_CYCLE_DEFAULT_VALUE 0
 
 #define VBUS_VOLT_MIN 2600
 #define VBUS_VOLT_ZERO_MAX 3
@@ -45,7 +40,6 @@
 #define SLAVE_CHG_START_SOC_MAX 90
 
 #define CHARGE_ONLINE_INTERVAL_MS	10000
-#define FLOAT_CHARGE_ONLINE_INTERVAL_MS	5000
 #define NORMAL_INTERVAL_MS	30000
 
 //Jeita parameter
@@ -67,19 +61,19 @@
 #define BOARD_TEMP_47_THRESH	470
 #define BOARD_TEMP_58_THRESH	580
 
+
+
 #define FCC_4000_MA	4000
-#define FCC_3700_MA	3700
 #define FCC_3600_MA	3600
 #define FCC_3000_MA	3000
 #define FCC_2600_MA	2600
-#define FCC_2500_MA	2500
 #define FCC_2200_MA	2200
 #define FCC_2000_MA	2000
 
 #define FCC_1800_MA	1800
 #define FCC_1600_MA	1600
 #define FCC_1500_MA	1500
-#define FCC_1300_MA	1300
+
 #define FCC_1200_MA	1200
 #define FCC_1100_MA	1100
 #define FCC_1000_MA	1000
@@ -90,20 +84,7 @@
 #define FCC_600_MA	600
 #define FCC_500_MA	500
 #define FCC_300_MA	300
-#define FCC_100_MA	100
 #define FCC_0_MA	0
-
-#define USBIN_ADAPTER_ALLOW_5V		5000
-#define USBIN_ADAPTER_ALLOW_9V		9000
-#define USBIN_ADAPTER_ALLOW_12V		12000
-
-#define PD_INPUT_CURRENT_3000_MA			3000000
-#define PD_INPUT_CURRENT_2000_MA			2000000
-#define PD_INPUT_CURRENT_1500_MA			1500000
-#define PD_INPUT_CURRENT_1000_MA			1000000
-#define PD_INPUT_CURRENT_500_MA			500000
-#define PD_INPUT_CURRENT_100_MA			100000
-#define PD_INPUT_CURRENT_0_MA				0
 
 #define SHUTDOWN_BATT_VOLT		3350000
 
@@ -117,24 +98,15 @@
 #define DEFAULT_HVDCP3_USB_VOLT_DESIGN	10000
 #define DEFAULT_PD_USB_VOLT_DESIGN	10000
 #define DEFAULT_USB_VOLT_DESIGN	5000
-#define DEFAULT_PD_USB_HIGH_CURRENT_DESIGN 2000
-#define DEFAULT_PD_USB_LOW_CURRENT_DESIGN 1000
 //- ExtB oak-2480, tankaikun@wt, add 20220121, fix power supply system report error maxChargingMicAmp cause mErrorShowDialog
 
 // ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
 #define WT_CHARGER_ALARM_TIME		30000 // 30s
 
-//+ ExtB OAK-10058, tankaikun@wt, add 20220421, fix charge status is full but capacity is lower than 100%
-#define RECHARGE_OFFSET_VOLT		100 //100mv
-
 #define DEFAULT_BATT_TEMP	250
 #define CHG_CURRENT_BYPASS_VALUE 2000
 
 #define HVDCP20_VOLT_6V 6000
-
-#ifdef WT_COMPILE_FACTORY_VERSION
-#define CONFIG_DISABLE_TEMP_PROTECT
-#endif
 
 enum batt_jeita_status {
 	BATT_TEMP_COLD = 0,
@@ -196,7 +168,6 @@ struct wt_chg {
 	int real_type;
 	int pd_min_vol;
 	int pd_max_vol;
-	int pd_allow_vol;
 	int pd_cur_max;
 	int pd_usb_suspend;
 	int pd_in_hard_reset;
@@ -211,11 +182,7 @@ struct wt_chg {
 	int batt_volt;
 	int chg_current;
 	int batt_capacity;
-	int fake_capacity;
-	int batt_capacity_pre;
-	int batt_capacity_last;
 	int batt_capacity_level;
-	int batt_capacity_recharge;
 	int batt_temp;
 	int batt_temp_true;
 	int batt_health;
@@ -294,22 +261,6 @@ struct wt_chg {
 	
 	int typec_pr_role;
 //- ExtB OAK-3916, tankaikun@wt, add 20220209, add battery protect mode
-
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	int fv_levels;
-	int *batt_cycle_fv_cfg;
-	int batt_cycle;
-
-	int batt_cycle_cv;
-	int batt_cycle_cv_pre;
-	int batt_debug_cycle;
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
-// ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-	int power_off_charge_mode;
-
-// ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-	int eoc_reported;
 
 //Bug 697289 ,lishuwen.wt,ADD,20211027, add typec cc orientation node
 	int typec_cc_orientation;

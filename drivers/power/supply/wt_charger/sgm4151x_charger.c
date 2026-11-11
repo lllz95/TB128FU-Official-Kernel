@@ -193,7 +193,7 @@ static int sgm4151x_set_chg_enable(struct sgm4151x_device *sgm_chg, int enable)
 {
 	int ret =0;
 
-	dev_dbg(sgm_chg->dev, "set slave charge: enable: %d\n", enable);
+	dev_err(sgm_chg->dev, "set slave charge: enable: %d\n", enable);
 	if (enable) {
 		sgm4151x_chg_enable(sgm_chg, false);
 		sgm4151x_enable_charger(sgm_chg);
@@ -210,7 +210,7 @@ static int sgm4151x_set_charge_current(struct sgm4151x_device *sgm_chg, int curr
 	u8 ichg;
 	u8 val;
 
-	dev_dbg(sgm_chg->dev, "set slave charge: chg current: %d\n", curr);
+	dev_err(sgm_chg->dev, "set slave charge: chg current: %d\n", curr);
 	ichg = (curr - SGM4151X_ICHG_BASE)/SGM4151X_ICHG_LSB;
 	val= ichg << SGM4151X_ICHG_SHIFT;
 
@@ -223,7 +223,7 @@ static int sgm4151x_set_term_current(struct sgm4151x_device *sgm_chg, int curr)
 	u8 iterm;
 	u8 val;
 
-	dev_dbg(sgm_chg->dev, "set slave charge: term current: %d\n", curr);
+	dev_err(sgm_chg->dev, "set slave charge: term current: %d\n", curr);
 	iterm = (curr - SGM4151X_ITERM_BASE) / SGM4151X_ITERM_LSB;
 	val = iterm << SGM4151X_ITERM_SHIFT;
 
@@ -246,7 +246,7 @@ static int sgm4151x_set_input_current_limit(struct sgm4151x_device *sgm_chg, int
 	u8 val;
 	u8 input_curr;
 
-	dev_dbg(sgm_chg->dev, "set slave charge: input current: %d\n", curr);
+	dev_err(sgm_chg->dev, "set slave charge: input current: %d\n", curr);
 	input_curr = (curr - SGM4151X_IINLIM_BASE) / SGM4151X_IINLIM_LSB;
 	val = input_curr << SGM4151X_IINLIM_SHIFT;
 
@@ -276,7 +276,7 @@ static int sgm4151x_set_chargevoltage(struct sgm4151x_device *sgm_chg, int volt)
 	u8 val;
 	u8 vchg;
 
-	dev_dbg(sgm_chg->dev, "set slave charge: voltage: %d\n", volt);
+	dev_err(sgm_chg->dev, "set slave charge: voltage: %d\n", volt);
 	vchg = (u8)((volt - SGM4151X_VREG_BASE)/SGM4151X_VREG_LSB);
 	val = vchg << SGM4151X_VREG_SHIFT;
 
@@ -381,7 +381,7 @@ static int sgm4151x_set_input_suspend(struct sgm4151x_device *sgm_chg, int suspe
 
 	int  ret = 0;
 
-	dev_dbg(sgm_chg->dev, "set input suspend: %d\n", suspend);
+	dev_err(sgm_chg->dev, "set input suspend: %d\n", suspend);
 	if (suspend) {
 		sgm4151x_enter_hiz_mode(sgm_chg);
 	} else {
@@ -440,13 +440,8 @@ static void sgm4151x_dump_regs(struct sgm4151x_device *sgm_chg)
 
 static int sgm4151x_detect_device(struct sgm4151x_device *sgm_chg)
 {
-	int ret,val;
+	int ret;
 	u8 data;
-
-	val = SGM4151X_SELECT_DISENABLE << SGM4151X_IPRECHG_SHIFT;
-
-	sgm4151x_update_bits(sgm_chg, SGM4151X_REG_03,
- 							   SGM4151X_ICSELECT_MASK, val);
 
 	ret = sgm4151x_read_byte(sgm_chg, &data, SGM4151X_REG_0B);
 	if (ret == 0) {
@@ -893,12 +888,10 @@ static int sgm4151x_charger_probe(struct i2c_client *client,
 	sgm_chg->client = client;
 	i2c_set_clientdata(client, sgm_chg);
 
-	dev_err(sgm_chg->dev, "sgm4151x_charger_probed\n");
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend 
 	sgm_chg->resume_completed = true;
 	mutex_init(&sgm_chg->resume_complete_lock);
 	//- ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend 
-
 
 	ret = sgm4151x_detect_device(sgm_chg);
 	if (!ret && sgm_chg->part_no == SGM41511) {
@@ -990,7 +983,7 @@ err_0:
 	devm_kfree(&client->dev, sgm_chg);
 	sgm_chg = NULL;
 	g_sgm_chg = NULL;
-	return -ENODEV;
+	return ret;
 }
 
 static void sgm4151x_charger_shutdown(struct i2c_client *client)

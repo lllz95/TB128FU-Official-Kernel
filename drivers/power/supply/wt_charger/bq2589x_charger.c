@@ -29,11 +29,6 @@
 
 static struct bq2589x *g_bq;
 
-//+ ExtB oak-10213, tankaikun@wt, add 20220510, recheck sdp/unknow charge type
-extern bool usb_state_configured;
-extern bool usb_android_work_stepup;
-//- ExtB oak-10213, tankaikun@wt, add 20220510, recheck sdp/unknow charge type
-
 static DEFINE_MUTEX(bq2589x_i2c_lock);
 
 static int bq2589x_read_byte(struct bq2589x *bq, u8 *data, u8 reg)
@@ -694,32 +689,6 @@ static bool bq2589x_is_charge_done(struct bq2589x *bq)
 }
 EXPORT_SYMBOL_GPL(bq2589x_is_charge_done);
 
-static int bq2589x_disable_batfet_reset(struct bq2589x *bq)
-{
-	u8 val;
-	int ret;
-
-	val = BQ2589X_BATFET_DIS_RES_EN_OFF << BQ2589X_BATFET_DIS_RES_EN_SHIFT;
-
-	ret = bq2589x_update_bits(bq, BQ2589X_REG_09, BQ2589X_BATFET_DIS_RES_EN_MASK, val);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(bq2589x_disable_batfet_reset);
-
-static int bq2589x_enable_batfet_reset(struct bq2589x *bq)
-{
-	u8 val;
-	int ret;
-
-	val = BQ2589X_BATFET_DIS_RES_EN_ON << BQ2589X_BATFET_DIS_RES_EN_SHIFT;
-
-	ret = bq2589x_update_bits(bq, BQ2589X_REG_09, BQ2589X_BATFET_DIS_RES_EN_MASK, val);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(bq2589x_enable_batfet_reset);
-
 static void bq2589x_dump_regs(struct bq2589x *bq)
 {
 	int addr, ret;
@@ -752,7 +721,6 @@ static int bq2589x_init_device(struct bq2589x *bq)
 
 	bq2589x_use_absolute_vindpm(bq, bq->cfg.use_absolute_vindpm);
 
-	bq2589x_disable_batfet_reset(bq);
 	ret = bq2589x_set_vindpm_offset(bq, 600);
 	if (ret < 0) {
 		dev_err(bq->dev, "%s:Failed to set vindpm offset:%d\n", __func__, ret);
@@ -782,22 +750,15 @@ static int bq2589x_init_device(struct bq2589x *bq)
 		dev_err(bq->dev, "%s:Failed to enable charger:%d\n", __func__, ret);
 		return ret;
 	}
-	bq->charging_enable = true; //ExtB oak-10827, tankaikun@wt, add 20220519, fix charging status update slow
 
 	bq2589x_adc_start(bq, false);
 	bq2589x_update_bits(bq, BQ2589X_REG_00, BQ2589X_ENILIM_MASK,
 		BQ2589X_ENILIM_DISABLE << BQ2589X_ENILIM_SHIFT);
 	bq2589x_update_bits(bq, BQ2589X_REG_02, 0x8, 1 << 3);
-	if (bq->is_bq25890h){
+	if (bq->is_bq25890h)
 		bq2589x_update_bits(bq, BQ2589X_REG_01, 0x2, 0 << 1);
-		//+ ooakt-2593, xiejiaming.wt, mod, 20230304, fix shipmode force batfet down immediateltly
-		ret = bq2589x_update_bits(bq, BQ2589X_REG_09, BQ2589X_BATFET_DIS_DELAY_MASK,
-				BQ2589X_BATFET_DIS_DELAY_ON <<BQ2589X_BATFET_DIS_DELAY_SHIFT);
-		pr_err("JM Bq2589x Set shipmode delay: %d\n", ret);
-		//- ooakt-2593, xiejiaming.wt, mod, 20230304, fix shipmode force batfet down immediateltly
-	} else {
+	else
 		bq2589x_update_bits(bq, BQ2589X_REG_02, 0x4, 0 << 2);
-	}
 	return ret;
 }
 
@@ -1112,126 +1073,6 @@ static void bq2589x_ico_workfunc(struct work_struct *work)
 	}
 }
 
-//+ ExtB oak-9040, tankaikun@wt, add 20220125, fix bq25890 otg ocp
-static void bq2589x_set_otg_current_workfunc(struct work_struct *work)
-{
-	struct bq2589x *bq = container_of(work, struct bq2589x, set_otg_current_work.work);
-
-	bq2589x_set_otg_current(bq, DEFAULT_OTG_CURR);
-}
-//- ExtB oak-9040, tankaikun@wt, add 20220125, fix bq25890 otg ocp
-
-//+ ExtB oak-10213, tankaikun@wt, add 20220510, recheck sdp/unknow charge type
-static void bq2589x_charge_type_recheck_workfunc(struct work_struct *work)
-{
-	struct bq2589x *bq = container_of(work, struct bq2589x, charge_type_recheck_work.work);
-	int ret;
-	int rerun_work_time=0;
-	union power_supply_propval val = {0,};
-
-	if(bq->usb_online) {
-		bq->usb_psy = power_supply_get_by_name("usb");
-		if (bq->usb_psy) {
-			ret = power_supply_get_property(bq->usb_psy,
-							POWER_SUPPLY_PROP_REAL_TYPE, &val);
-			if (ret < 0) {
-				dev_err(bq->dev,
-					"Couldn't get POWER_SUPPLY_PROP_TYPE, ret=%d\n", ret);
-			}
-			bq->charge_type = val.intval;
-		}else{
-			dev_err(bq->dev,"usb_psy get error \n");
-			return;
-		}
-
-		bq->wt_hvdcp_psy = power_supply_get_by_name("wt_hvdcp");
-		if (!bq->wt_hvdcp_psy) {
-			dev_err(bq->dev,"wt_hvdcp_psy get error \n");
-			return;
-		}
-		pr_err("%s usb_configured:%d android_work_setup:%d chg_type:%d \n", __func__, usb_state_configured,
-									usb_android_work_stepup, bq->charge_type);
-
-		// sdp type
-		if(!usb_state_configured && POWER_SUPPLY_TYPE_USB == bq->charge_type){
-			if(usb_android_work_stepup){
-				if(0 == bq->sdp_recheck_cnt){
-					rerun_work_time = 5000;
-					bq->sdp_recheck_cnt++;
-				}else if(bq->sdp_recheck_cnt < 4){
-					rerun_work_time = 5000;
-					bq->sdp_recheck_cnt++;
-					bq->vbus_volt = bq2589x_adc_read_vbus_volt(bq);
-
-					if(bq->vbus_volt > 9000) {
-						pr_err("vbus_volt > 9000 recheck \n");
-						ret = power_supply_set_property(bq->wt_hvdcp_psy, POWER_SUPPLY_PROP_SOFT_RESET, &val);
-						if (ret < 0) {
-							dev_err(bq->dev,
-								"Couldn't get POWER_SUPPLY_PROP_SOFT_RESET ret=%d\n", ret);
-						}
-						msleep(10);
-					}
-
-					bq2589x_usb_switch(bq, true);
-					ret = power_supply_set_property(bq->wt_hvdcp_psy, POWER_SUPPLY_PROP_APSD_RERUN, &val);
-					if(ret < 0){
-						dev_err(bq->dev,"Couldn't set POWER_SUPPLY_PROP_APSD_RERUN, ret=%d\n", ret);
-						bq2589x_usb_switch(bq, false);
-					}
-				}
-			}else{
-				bq->vbus_volt = bq2589x_adc_read_vbus_volt(bq);
-				rerun_work_time = 30000; // after boot up; wait android work setup 30s
-
-				pr_err("bq2589x_charge_type_recheck_workfunc bq->vbus_volt=%d", bq->vbus_volt);
-				if(0 == bq->sdp_recheck_cnt && bq->vbus_volt > 9000) {
-					pr_err("vbus_volt > 9000 recheck now \n");
-					ret = power_supply_set_property(bq->wt_hvdcp_psy,
-												POWER_SUPPLY_PROP_SOFT_RESET, &val);
-					if (ret < 0) {
-						dev_err(bq->dev,
-							"Couldn't get POWER_SUPPLY_PROP_SOFT_RESET ret=%d\n", ret);
-					}
-					msleep(10);
-					bq2589x_usb_switch(bq, true);
-					ret = power_supply_set_property(bq->wt_hvdcp_psy,
-							POWER_SUPPLY_PROP_APSD_RERUN, &val);
-					if(ret < 0) {
-						dev_err(bq->dev,"Couldn't set POWER_SUPPLY_PROP_APSD_RERUN, ret=%d\n", ret);
-						bq2589x_usb_switch(bq, false);
-					}
-				}
-			}
-		}
-
-		// unknow type
-		if(POWER_SUPPLY_TYPE_UNKNOWN == bq->charge_type) {
-			pr_err("%s unknow chage type recheck angin \n");
-			if(0 == bq->unknow_recheck_cnt){
-				rerun_work_time = 3000;
-				bq->unknow_recheck_cnt++;
-			}else if(bq->unknow_recheck_cnt < 4){
-				bq->unknow_recheck_cnt++;
-				rerun_work_time = 5000;
-				bq2589x_usb_switch(bq, true);
-				ret = power_supply_set_property(bq->wt_hvdcp_psy, POWER_SUPPLY_PROP_APSD_RERUN, &val);
-				if(ret < 0) {
-					dev_err(bq->dev,"Couldn't set POWER_SUPPLY_PROP_APSD_RERUN, ret=%d\n", ret);
-					bq2589x_usb_switch(bq, false);
-				}
-			}
-		}
-	}
-
-	pr_err("func:%s sdp_recheck_cnt:%d unknow_recheck_cnt=%d rerun_work_time:%d\n", __func__,
-										bq->sdp_recheck_cnt, bq->unknow_recheck_cnt, rerun_work_time);
-
-	if(rerun_work_time)
-		schedule_delayed_work(&bq->charge_type_recheck_work, msecs_to_jiffies(rerun_work_time));
-}
-//- ExtB oak-10213, tankaikun@wt, add 20220510, fix sdp/unknow charge type
-
 static void bq2589x_monitor_workfunc(struct work_struct *work)
 {
 	struct bq2589x *bq = container_of(work, struct bq2589x, monitor_work.work);
@@ -1271,7 +1112,7 @@ static void bq2589x_monitor_workfunc(struct work_struct *work)
 	}
 
 	dev_err(bq->dev, "%s:vbus_type: %d, vbus volt:%d,vbat volt:%d,charge current:%d, usb-switch1 %d, usb_switch_flag %d\n",
-			__func__, bq->charge_type, bq->vbus_volt, bq->vbat_volt, chg_current, gpio_get_value(bq->usb_switch1), bq->usb_switch_flag);
+			__func__, bq->charge_type, bq->vbus_volt, bq->vbat_volt, chg_current, bq->usb_switch1, bq->usb_switch_flag);
 
 	ret = bq2589x_read_byte(bq, &status, BQ2589X_REG_13);
 	if (ret == 0 && (status & BQ2589X_VDPM_STAT_MASK))
@@ -1413,16 +1254,10 @@ void bq2589x_set_otg_status(struct bq2589x *bq, bool enable)
 			}
 
 			if(val.intval > BATT_LOW_VOLT) {
-				if(bq->is_bq25890h){
-					bq2589x_set_otg_current(bq, MAX_OTG_CURR); // ExtB oak-2873, tankaikun@wt, modify 20220118, modify otg current to 1.2A
-					cancel_delayed_work_sync(&bq->set_otg_current_work);
-					schedule_delayed_work(&bq->set_otg_current_work, 300);// ExtB oak-9040, tankaikun@wt, add 20220402, fix bq25890 otg ocp
-				}
-				else
-					bq2589x_set_otg_current(bq, DEFAULT_OTG_CURR);
+				bq2589x_set_otg_current(bq, 1100); // ExtB oak-2873, tankaikun@wt, modify 20220118, modify otg current to 1.2A
 			}
 			else {
-				bq2589x_set_otg_current(bq, MIN_OTG_CURR);
+				bq2589x_set_otg_current(bq, 500);
 			}
 		}
 	} else {
@@ -1437,7 +1272,7 @@ static void bq2589x_charger_irq_workfunc(struct work_struct *work)
 	u8 status = 0;
 	u8 fault = 0;
 	u8 charge_status = 0;
-	int ret,pd_active;
+	int ret;
 	union power_supply_propval val = {0,};
 
 	/* Read STATUS and FAULT registers */
@@ -1474,28 +1309,9 @@ static void bq2589x_charger_irq_workfunc(struct work_struct *work)
 		break;
 	}
 
-	bq->usb_psy = power_supply_get_by_name("usb");
-	if(bq->usb_psy) {
-		ret = power_supply_get_property(bq->usb_psy,
-						POWER_SUPPLY_PROP_PD_ACTIVE, &val);
-		pd_active = val.intval;
-		if (ret < 0) {
-			dev_err(bq->dev,
-				"Couldn't set power_supply_prop_online: ret = %d\n",  ret);
-		}
-	}
-
 	if ((bq->usb_switch_flag && bq->usb_online) && ( !bq->firmware_flag)) {
-		if(pd_active != POWER_SUPPLY_PD_ACTIVE && pd_active != POWER_SUPPLY_PD_PPS_ACTIVE){
-			bq2589x_usb_switch(bq, true);
-		}
+		bq2589x_usb_switch(bq, true);
 		bq->usb_switch_flag = false;
-
-//+ ExtB OAK-6071, tankaikun@wt, modify 20220307, fix adapter plug and unplug frequently and do not charge
-		bq->charge_type = POWER_SUPPLY_TYPE_UNKNOWN;
-		bq2589x_set_usb_type(bq);
-		msleep(2);
-//- ExtB OAK-6071, tankaikun@wt, modify 20220307, fix adapter plug and unplug frequently and do not charge
 
 		bq->wt_hvdcp_psy = power_supply_get_by_name("wt_hvdcp");
 		if (bq->wt_hvdcp_psy) {
@@ -1510,11 +1326,6 @@ static void bq2589x_charger_irq_workfunc(struct work_struct *work)
 				bq2589x_usb_switch(bq, false);
 				cancel_delayed_work_sync(&bq->monitor_work);
 				schedule_delayed_work(&bq->monitor_work, msecs_to_jiffies(300));
-			} else {
-				cancel_delayed_work_sync(&bq->charge_type_recheck_work);
-				schedule_delayed_work(&bq->charge_type_recheck_work, msecs_to_jiffies(5000));
-				bq->sdp_recheck_cnt = 0;
-				bq->unknow_recheck_cnt = 0;
 			}
 		}
 
@@ -1522,22 +1333,15 @@ static void bq2589x_charger_irq_workfunc(struct work_struct *work)
 		msleep(20);
 		bq2589x_set_wtchg_update_work(bq);
 		dev_err(bq->dev, "%s:adapter plugged in\n", __func__);
-	} else if ((!bq->usb_online) && (!bq->firmware_flag)) {
-		if(pd_active != POWER_SUPPLY_PD_ACTIVE && pd_active != POWER_SUPPLY_PD_PPS_ACTIVE){
-			bq2589x_usb_switch(bq, false);
-		}
+	} else if ((!bq->usb_online) && ( !bq->firmware_flag)) {
+		bq2589x_usb_switch(bq, false);
 		bq->usb_switch_flag = true;
 
-		schedule_work(&bq->adapter_out_work);
-		msleep(20);
 		bq->charge_type = POWER_SUPPLY_TYPE_UNKNOWN;
 		bq2589x_set_usb_type(bq);
+		schedule_work(&bq->adapter_out_work);
+		msleep(20);
 		bq2589x_set_wtchg_update_work(bq);
-		//+ ExtB oak-10213, tankaikun@wt, add 20220510, fix sdp/unknow charge type
-		bq->sdp_recheck_cnt = 0;
-		bq->unknow_recheck_cnt = 0;
-		cancel_delayed_work_sync(&bq->charge_type_recheck_work);
-		//- ExtB oak-10213, tankaikun@wt, add 20220510, fix sdp/unknow charge type
 		dev_err(bq->dev, "%s:adapter removed\n", __func__);
 	}
 
@@ -1590,7 +1394,6 @@ static int bq2589x_usb_get_prop(struct power_supply *psy,
 {
 	struct bq2589x *bq = power_supply_get_drvdata(psy);
 	int ret = 0;
-	u8 state = 0 ;
 	val->intval = 0;
 
 	switch (psp) {
@@ -1624,8 +1427,6 @@ static int bq2589x_usb_get_prop(struct power_supply *psy,
 		break;
 	//- ExtB oak-4542, tankaikun@wt, add 20220206, fix usb do not have diag port
 	case POWER_SUPPLY_PROP_INPUT_SUSPEND:
-		bq2589x_get_hiz_mode(bq, &state);
-		bq->usb_suspend = state;
 		val->intval = bq->usb_suspend;
 		break;
 	default:
@@ -1661,7 +1462,7 @@ static int bq2589x_usb_set_prop(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_INPUT_SUSPEND:
 		bq->usb_suspend = (bool)val->intval;
-		dev_dbg(bq->dev,
+		dev_err(bq->dev,
 				"set usb suspend: %d\n", bq->usb_suspend);
 		if (bq->usb_suspend) {
 			bq2589x_enter_hiz_mode(bq);
@@ -1671,14 +1472,14 @@ static int bq2589x_usb_set_prop(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		dev_dbg(bq->dev, 
+		dev_err(bq->dev, 
 				"set input current: %d\n", val->intval);
 		bq2589x_set_input_current_limit(bq, val->intval);
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_ENABLED:
 		bq->charging_enable = (bool)val->intval;
-		dev_dbg(bq->dev,
+		dev_err(bq->dev,
 				"set charging enable: %d\n", bq->charging_enable);
 		if (bq->charging_enable) {
 			bq2589x_enable_charger(bq);
@@ -1688,19 +1489,19 @@ static int bq2589x_usb_set_prop(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
-		dev_dbg(bq->dev, 
+		dev_err(bq->dev, 
 				"set term current: %d\n", val->intval);
 		bq2589x_set_term_current(bq, val->intval);
 		break;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		dev_dbg(bq->dev, 
+		dev_err(bq->dev, 
 				"set charge voltage: %d\n", val->intval);
 		bq2589x_set_chargevoltage(bq, val->intval);
 		break;
 
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		dev_dbg(bq->dev, 
+		dev_err(bq->dev, 
 				"set charge current: %d\n", val->intval);
 		bq2589x_set_charge_current(bq, val->intval);
 		break;
@@ -1809,6 +1610,7 @@ static int bq2589x_charger_probe(struct i2c_client *client,
 
 	bq->usb_switch_flag = false; // ExtB oak-4542, tankaikun@wt, add 20220206, fix usb do not have diag port
 	bq->firmware_flag = false;
+
 	ret = bq2589x_detect_device(bq);
 	if (!ret && bq->part_no == BQ25890) {
 		bq->status |= BQ2589X_STATUS_EXIST;
@@ -1866,8 +1668,6 @@ static int bq2589x_charger_probe(struct i2c_client *client,
 	INIT_DELAYED_WORK(&bq->irq_work, bq2589x_charger_irq_workfunc);
 	INIT_DELAYED_WORK(&bq->monitor_work, bq2589x_monitor_workfunc);
 	INIT_DELAYED_WORK(&bq->ico_work, bq2589x_ico_workfunc);
-	INIT_DELAYED_WORK(&bq->set_otg_current_work, bq2589x_set_otg_current_workfunc);
-	INIT_DELAYED_WORK(&bq->charge_type_recheck_work, bq2589x_charge_type_recheck_workfunc);
 
 	ret = sysfs_create_group(&bq->dev->kobj, &bq2589x_attr_group);
 	if (ret) {

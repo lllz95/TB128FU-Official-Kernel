@@ -9,13 +9,7 @@
 #define DEFAULT_TERM_CURR	256
 #define DEFAULT_CHG_CURR	500
 
-#define DEFAULT_OTG_CURR	1100
-#define MAX_OTG_CURR		1600
-#define MIN_OTG_CURR		500
-
 #define CHG_FULL_ERROR_MAX	1
-
-#define CHARGE_TYPE_RECHECK
 
 enum bq2589x_vbus_type {
 	BQ2589X_VBUS_NONE,
@@ -91,8 +85,6 @@ struct bq2589x {
 	struct work_struct adapter_out_work;
 	struct delayed_work monitor_work;
 	struct delayed_work ico_work;
-	struct delayed_work set_otg_current_work;
-	struct delayed_work charge_type_recheck_work;
 
 	struct power_supply_desc usb;
 	struct power_supply_desc wall;
@@ -112,16 +104,12 @@ struct bq2589x {
 
 	bool firmware_flag;
 	bool charging_enable;
-	int usb_suspend;
+	bool usb_suspend;
 
 	int chg_error_count;
 
 // ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
 	int resume_completed;
-
-// ExtB oak-10213, tankaikun@wt, add 20220510, recheck sdp/unknow charge type
-	int sdp_recheck_cnt;
-	int unknow_recheck_cnt;
 };
 
 extern int main_set_hiz_mode(bool en);

@@ -18,14 +18,6 @@ config CHARGE_SGM4151X
 	   Say Y here to enable support for charge with SGM4151X chips
 	   connected over an I2C bus.
 
-config CHARGE_SC89601
-	bool "SC89601 driver"
-	depends on I2C && OF
-	select REGMAP_I2C
-	help
-	   Say Y here to enable support for charge with SGM4151X chips
-	   connected over an I2C bus.
-
 config WT_CHARGER
 	bool "WT_CHARGER power supply framework based driver"
 	help

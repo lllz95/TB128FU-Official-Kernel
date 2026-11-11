@@ -29,14 +29,6 @@
 #include <linux/ktime.h>
 #include "wt_chg.h"
 
-extern bool lcd_on;
-
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-#ifndef min
-#define min(a, b) ((a) < (b) ? (a) : (b))
-#endif
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
 static int thermal_mitigation[] = {
 	4000000, 3500000, 3000000, 2500000,
 	2000000, 1500000, 1000000, 500000,
@@ -54,9 +46,6 @@ static struct hvdcp30_profile_t  hvdcp30_profile[] = {
 	{4200, 10000},
 	{4300, 10000},
 };
-
-static void wtchg_init_chg_parameter(struct wt_chg *chg);
-static void wtchg_battery_check_eoc_condition(struct wt_chg *chg);
 
 static int get_iio_channel(struct wt_chg *chg, const char *propname,
                                         struct iio_channel **chan)
@@ -86,32 +75,6 @@ static inline bool is_device_suspended(struct wt_chg *chg)
 }
 //- ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
 
-//+ ExtB oak-11180, tankaikun@wt, add 20220607, modify float animation show time
-static inline bool is_float_offmode_chg_awake(struct wt_chg *chg)
-{
-	return (chg->real_type == 16 && chg->power_off_charge_mode);
-}
-//- ExtB oak-11180, tankaikun@wt, add 20220607, modify float animation show time
-
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-static void wtchg_set_bms_cycle_cv(struct wt_chg *chg)
-{
-	int ret;
-	union power_supply_propval val = {0,};
-
-	val.intval = chg->batt_cycle_cv;
-	chg->bms_psy = power_supply_get_by_name("bms");
-	if (chg->bms_psy) {
-		ret = power_supply_set_property(chg->bms_psy,
-							POWER_SUPPLY_PROP_VOLTAGE_MAX, &val);
-		if (ret < 0) {
-			dev_err(chg->dev,
-				"Couldn't set bms: POWER_SUPPLY_PROP_VOLTAGE_NOW, ret=%d\n", ret);
-		}
-	}
-}
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
 static int wtchg_get_usb_online(struct wt_chg *chg)
 {
 	if (chg->vbus_online &&
@@ -129,8 +92,8 @@ static int wtchg_get_usb_online(struct wt_chg *chg)
 //+ ExtB oak-3916, tankaikun@wt, add 20220209, modify battery protect mode
 static void wtchg_set_usb_online(struct wt_chg *chg, int online)
 {
-	//pr_err("wtchg_set_usb_online capacity=%d protect=%d batt_protected_mode=%d\n", 
-	//			chg->batt_capacity, chg->batt_protected_mode);
+	pr_err("wtchg_set_usb_online capacity=%d protect=%d batt_protected_mode=%d\n", 
+				chg->batt_capacity, chg->batt_protected_mode);
 	mutex_lock(&chg->battery_protect_lock);
 	if(chg->batt_protected_mode == true){
 		if ((chg->batt_capacity >= BATT_PROTECT_SOC_MIN)
@@ -194,20 +157,11 @@ static void wtchg_pd_usb_switch(struct wt_chg *chg)
 
 static void wtchg_set_usb_real_type(struct wt_chg *chg, int type)
 {
-	chg->real_type = type;
+	 chg->real_type = type;
 
-	if (chg->pd_active == POWER_SUPPLY_PD_ACTIVE
+	 if (chg->pd_active == POWER_SUPPLY_PD_ACTIVE
 		|| chg->pd_active == POWER_SUPPLY_PD_PPS_ACTIVE) {
 			chg->real_type = POWER_SUPPLY_TYPE_USB_PD;
-            //+ OOAKT-3772, xiejiaming.wt, add, 20230323, fix PD hub connected 10W charger, charger type error.
-			if (chg->power_off_charge_mode 
-	    		&& (6000 >= chg->vbus_volt)
-				&& ((POWER_SUPPLY_TYPE_USB_FLOAT == type)
-				  || (POWER_SUPPLY_TYPE_UNKNOWN == type))) {
-					chg->real_type = POWER_SUPPLY_TYPE_USB_DCP;
-					pr_err("%s Find PD but vbus_volt too small, force setting to DCP\n", __func__);
-			}
-            //+ OOAKT-3772, xiejiaming.wt, add, 20230323, fix PD hub connected 10W charger, charger type error.
 	}
 }
 
@@ -234,8 +188,6 @@ static void wtchg_fast_charger(struct wt_chg *chg)
 static int wtchg_get_vbus_online(struct wt_chg *chg)
 {
 	int ret;
-	int vbus_online = 0;
-	int input_suspend = 0;
 	union power_supply_propval val = {0,};
 
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
@@ -252,31 +204,10 @@ static int wtchg_get_vbus_online(struct wt_chg *chg)
 		if (ret < 0) {
 			dev_err(chg->dev,
 				"Couldn't get main: POWER_SUPPLY_PROP_ONLINE, ret=%d\n", ret);
-			val.intval = 0;
 		}
-		vbus_online = val.intval;
 
-		ret = power_supply_get_property(chg->main_psy,
-							POWER_SUPPLY_PROP_INPUT_SUSPEND, &val);
-		if (ret < 0) {
-			dev_err(chg->dev,
-				"Couldn't get main: POWER_SUPPLY_PROP_ONLINE, ret=%d\n", ret);
-			val.intval = 0;
-		}
-		input_suspend = val.intval;
+		chg->vbus_online = val.intval;
 	}
-
-	chg->vbus_online = vbus_online;
-
-	//+ ExtB OAK-5456, tankaikun@wt, modify 20220307, fix ato version soc>=79%, usb statue is unknown
-	if(chg->typec_pr_role == POWER_SUPPLY_TYPEC_PR_SINK && 0 == vbus_online
-			&& 0 != chg->typec_cc_orientation
-			&& 1 == input_suspend
-			&& !chg->batt_protected_mode){
-		chg->vbus_online = 1;
-		wtchg_init_chg_parameter(chg);
-	}
-	//- ExtB OAK-5456, tankaikun@wt, modify 20220307, fix ato version soc>=79%, usb statue is unknown
 
 	return chg->vbus_online; 
 }
@@ -297,76 +228,6 @@ static void wtchg_set_slave_chg_ship_mode(struct wt_chg *chg)
 		}
 	}
 }
-
-//+ ExtB oak-12565, tankaikun@wt, add 20220728,fix tab c to c connect will cause hardreset
-#define MICRO_5V	5000000
-#define MICRO_9V	9000000
-#define MICRO_12V	12000000
-static int wtchg_set_usb_pd_allowed_voltage(struct wt_chg *chg,
-					int min_allowed_uv, int max_allowed_uv)
-{
-	int allowed_voltage;
-
-	if (min_allowed_uv == MICRO_5V && max_allowed_uv == MICRO_5V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_5V;
-	} else if (min_allowed_uv == MICRO_9V && max_allowed_uv == MICRO_9V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_9V;
-	} else if (min_allowed_uv == MICRO_12V && max_allowed_uv == MICRO_12V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_12V;
-	} else if (min_allowed_uv < MICRO_9V && max_allowed_uv <= MICRO_9V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_5V;
-	} else if (min_allowed_uv < MICRO_9V && max_allowed_uv <= MICRO_12V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_9V;
-	} else if (min_allowed_uv < MICRO_12V && max_allowed_uv <= MICRO_12V) {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_12V;
-	} else {
-		allowed_voltage = USBIN_ADAPTER_ALLOW_5V;
-		pr_err( "invalid allowed voltage [%d, %d]\n",  min_allowed_uv, max_allowed_uv);
-		return -EINVAL;
-	}
-
-	chg->pd_allow_vol = allowed_voltage;
-
-	return 0;
-}
-
-int wtchg_set_prop_pd_voltage_min(struct wt_chg *chg,
-				    const union power_supply_propval *val)
-{
-	int rc, min_uv;
-
-	min_uv = min(val->intval, chg->pd_max_vol);
-	rc = wtchg_set_usb_pd_allowed_voltage(chg, min_uv,
-					       chg->pd_max_vol);
-	if (rc < 0) {
-		pr_err("invalid max voltage %duV rc=%d\n",
-			val->intval, rc);
-		return rc;
-	}
-
-	chg->pd_min_vol = min_uv;
-
-	return rc;
-}
-
-int wtchg_set_prop_pd_voltage_max(struct wt_chg *chg,
-				    const union power_supply_propval *val)
-{
-	int rc, max_uv;
-
-	max_uv = max(val->intval, chg->pd_min_vol);
-	rc = wtchg_set_usb_pd_allowed_voltage(chg, chg->pd_min_vol,
-					       max_uv);
-	if (rc < 0) {
-		pr_err( "invalid min voltage %duV rc=%d\n",
-			val->intval, rc);
-		return rc;
-	}
-
-	chg->pd_max_vol = max_uv;
-	return rc;
-}
-//- ExtB oak-12565, tankaikun@wt, add 20220728,fix tab c to c connect will cause hardreset
 
 static void wtchg_set_main_chg_ship_mode(struct wt_chg *chg)
 {
@@ -530,6 +391,7 @@ static void wtchg_set_main_chg_usb_switch(struct wt_chg *chg, int enable)
 	int ret;
 	union power_supply_propval val = {0,};
 
+	
 	val.intval = enable;
 	chg->main_psy = power_supply_get_by_name("main_chg");
 	if (chg->main_psy) {
@@ -699,12 +561,10 @@ static int wtchg_set_chg_input_current(struct wt_chg *chg)
 		chg->batt_protected_mode_disable_suspend_pre = chg->batt_protected_mode_disable_suspend;
 		wtchg_set_main_input_current(chg, chg->main_chg_input_curr);
 
-		//+ ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-		if (chg->start_charging_test)
-			wtchg_set_main_input_suspend(chg, false);
-		else
+		if(chg->batt_protected_mode_disable_suspend)
 			wtchg_set_main_input_suspend(chg, true);
-		//- ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
+		else
+			wtchg_set_main_input_suspend(chg, false);
 
 		if (chg->slave_chg_enable && !chg->batt_protected_mode_disable_suspend) {
 			wtchg_set_slave_input_suspend(chg, false);
@@ -720,12 +580,6 @@ static int wtchg_set_chg_input_current(struct wt_chg *chg)
 static int wtchg_set_chg_ibat_current(struct wt_chg *chg)
 {
 	int ret = 0;
-	//oak-9810,liangsuocheng.wt add 20220414 disable charging for pd protect
-	if(chg->batt_protected_mode_disable_charge)
-	{
-		chg->chg_ibatt = 0;
-		chg->slave_chg_enable = 0;
-	}
 
 	if (chg->slave_chg_enable) {
 		chg->main_chg_ibatt = chg->chg_ibatt /2 + 600;
@@ -735,29 +589,29 @@ static int wtchg_set_chg_ibat_current(struct wt_chg *chg)
 		chg->slave_chg_ibatt = FCC_0_MA;
 	}
 
-	dev_err(chg->dev,  "type_ibatt=%d, jeita_ibatt=%d, main_chg_ibatt=%d, slave_chg_ibatt=%d, chg_ibatt=%d,chg_ibatt_pre=%d,batt_protected_mode_disable_charge=%d\n",
+	dev_err(chg->dev,  "type_ibatt=%d, jeita_ibatt=%d, main_chg_ibatt=%d, slave_chg_ibatt=%d, chg_ibatt=%d,chg_ibatt_pre=%d\n",
 		chg->chg_type_ibatt, chg->jeita_ibatt, chg->main_chg_ibatt,
-		chg->slave_chg_ibatt, chg->chg_ibatt, chg->chg_ibatt_pre,chg->batt_protected_mode_disable_charge);
+		chg->slave_chg_ibatt, chg->chg_ibatt, chg->chg_ibatt_pre);
 
 	//set charge ibat current value
-	if ((chg->chg_ibatt  != chg->chg_ibatt_pre)){
-
+	if ((chg->chg_ibatt  != chg->chg_ibatt_pre) ||
+		(chg->batt_protected_mode_disable_charge != chg->batt_protected_mode_disable_charge_pre)){
 		chg->chg_ibatt_pre = chg->chg_ibatt;
+		chg->batt_protected_mode_disable_charge_pre = chg->batt_protected_mode_disable_charge;
 
 		wtchg_set_main_chg_current(chg, chg->main_chg_ibatt);
 		wtchg_set_main_term_current(chg, chg->chg_iterm);
-		if (chg->main_chg_ibatt == FCC_0_MA) {
+		if (chg->main_chg_ibatt == FCC_0_MA || chg->batt_protected_mode_disable_charge) {
 			wtchg_set_main_chg_enable(chg, false);
 		} else {
 			wtchg_set_main_chg_enable(chg, true);
 		}
 
-		if (chg->slave_chg_enable) {
+		if (chg->slave_chg_enable && !chg->batt_protected_mode_disable_charge) {
 			wtchg_set_slave_chg_current(chg, chg->slave_chg_ibatt);
 			wtchg_set_slave_chg_enable(chg, true);
 			wtchg_set_slave_chg_monitor(chg, true);
 		} else {
-			wtchg_set_slave_chg_current(chg, chg->slave_chg_ibatt);
 			wtchg_set_slave_chg_enable(chg, false);
 			wtchg_set_slave_chg_monitor(chg, false);
 		}
@@ -854,7 +708,6 @@ static int wtchg_get_usb_port_temp(struct wt_chg *chg,  int *val)
 		if (ret < 0) {
 			dev_err(chg->dev,
 				"read usb_port_therm channel fail, ret=%d\n", ret);
-			*val = 300;
 			return ret;
 		}
 		*val = temp / 100;
@@ -868,7 +721,6 @@ static int wtchg_get_usb_port_temp(struct wt_chg *chg,  int *val)
 			ret = iio_read_channel_processed(chg->usb_port_therm,&temp);
 			if (ret < 0) {
 				dev_err(chg->dev,"read usb_port_therm channel fail, ret=%d\n", ret);
-				*val = 300;
 				return ret;
 			}
 			*val = temp / 100;
@@ -894,7 +746,6 @@ static int wtchg_get_board_pcb_temp(struct wt_chg *chg,  int *val)
 		if (ret < 0) {
 			dev_err(chg->dev,
 				"read board_pcb_therm channel fail, ret=%d\n", ret);
-			*val = 300;
 			return ret;
 		}
 		*val = temp / 100;
@@ -908,7 +759,6 @@ static int wtchg_get_board_pcb_temp(struct wt_chg *chg,  int *val)
 			ret = iio_read_channel_processed(chg->board_pcb_therm,&temp);
 			if (ret < 0) {
 				dev_err(chg->dev,"read board_pcb_therm channel fail, ret=%d\n", ret);
-			        *val = 300;
 				return ret;
 			}
 			*val = temp / 100;
@@ -943,27 +793,13 @@ static int wtchg_get_usb_max_current(struct wt_chg *chg)
 	if(chg->vbus_online){
 		switch (chg->real_type) {
 		case POWER_SUPPLY_TYPE_USB_PD:
-			if(chg->pd_max_vol > 5000000)
-				input_curr_max = DEFAULT_PD_USB_HIGH_CURRENT_DESIGN;
-			else
-				if(chg->chg_current > 1500000)
-					input_curr_max = DEFAULT_PD_USB_HIGH_CURRENT_DESIGN;
-				else
-					input_curr_max = DEFAULT_PD_USB_LOW_CURRENT_DESIGN;
-			break;
 		case POWER_SUPPLY_TYPE_USB_HVDCP:
 		case POWER_SUPPLY_TYPE_USB_HVDCP_3:
 		case POWER_SUPPLY_TYPE_USB_HVDCP_3P5:
 			input_curr_max = FCC_2000_MA;
 			break;
-		case POWER_SUPPLY_TYPE_USB_DCP:
-			if(chg->chg_current > 1500000)
-				input_curr_max = FCC_2000_MA;
-			else
-				input_curr_max = FCC_1000_MA;
-			break;
 		case POWER_SUPPLY_TYPE_USB_CDP:
-			input_curr_max = FCC_1000_MA;
+			input_curr_max = FCC_1500_MA;
 			break;
 		case POWER_SUPPLY_TYPE_USB:
 		case POWER_SUPPLY_TYPE_USB_FLOAT:
@@ -989,7 +825,7 @@ static int wtchg_get_usb_max_voltage(struct wt_chg *chg)
 	if(chg->vbus_online){
 		switch (chg->real_type) {
 		case POWER_SUPPLY_TYPE_USB_PD:
-			input_voltage_max = chg->pd_max_vol / 1000;
+			input_voltage_max = DEFAULT_PD_USB_VOLT_DESIGN;
 			break;			
 		case POWER_SUPPLY_TYPE_USB_HVDCP_3:
 		case POWER_SUPPLY_TYPE_USB_HVDCP_3P5:
@@ -998,7 +834,6 @@ static int wtchg_get_usb_max_voltage(struct wt_chg *chg)
 		case POWER_SUPPLY_TYPE_USB_HVDCP:
 			input_voltage_max = DEFAULT_HVDCP_USB_VOLT_DESIGN;
 			break;
-		case POWER_SUPPLY_TYPE_USB_DCP:
 		case POWER_SUPPLY_TYPE_USB_CDP:
 		case POWER_SUPPLY_TYPE_USB:
 		case POWER_SUPPLY_TYPE_USB_FLOAT:
@@ -1040,16 +875,6 @@ static int wtchg_get_batt_status(struct wt_chg *chg)
 		}
 
 		chg->chg_status = val.intval;
-
-		//+ ooakt-2554, xiejiaming.wt add 20230322, fix vbus offline status error 
-		//+ ooakt-97, xiejiaming.wt add 20230209, modify status while protected
-		if (true == chg->batt_protected_mode && 
-			POWER_SUPPLY_STATUS_DISCHARGING == chg->chg_status &&
-			  1 == chg->vbus_online) {
-			chg->chg_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
-		}
-		//- ooakt-97, xiejiaming.wt add 20230209, modify status while protected
-		//- ooakt-2554, xiejiaming.wt add 20230322, fix vbus offline status error 
 	}
 #else
 	chg->bms_psy = power_supply_get_by_name("bms");
@@ -1219,7 +1044,7 @@ static int wtchg_get_batt_temp(struct wt_chg *chg)
 
 	if (chg->batt_temp_debug_flag) {
 		chg->batt_temp = chg->batt_debug_temp;
-		dev_err(chg->dev,"batt_temp_debug_flag=%d use batt_debug_temp=%d\n",
+		dev_err(chg->dev,"lsw batt_temp_debug_flag=%d use batt_debug_temp=%d\n",
 								chg->batt_temp_debug_flag, chg->batt_debug_temp);
 	}
 
@@ -1230,13 +1055,7 @@ static int wtchg_get_batt_capacity(struct wt_chg *chg)
 {
 	int ret;
 	int capacity;
-	int soc_change;
 	union power_supply_propval val = {0,};
-
-	if(chg->fake_capacity >= 0){
-		chg->batt_capacity = chg->fake_capacity;
-		return chg->batt_capacity;
-	}
 
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
 	if(is_device_suspended(chg)){
@@ -1257,8 +1076,8 @@ static int wtchg_get_batt_capacity(struct wt_chg *chg)
 
 		capacity = val.intval;
 	}
-// ExtB oak-13435, tankaikun@wt, add 20221128, fix reboot device, capacity:0%->1%
-	if (capacity  >= BATT_SOC_ZERO) {
+
+	if (capacity  > BATT_SOC_ZERO) {
 		chg->soc_zero_count = 0;
 		if(capacity > 100)
 			chg->batt_capacity = BATT_CAPACITY_DEFAULT_VALUE;
@@ -1271,33 +1090,6 @@ static int wtchg_get_batt_capacity(struct wt_chg *chg)
 		}
 	}
 
-	// ExtB oak-9702, tankaikun@wt, add 20220317, fix battery protect mode capacity > 60%
-	chg->batt_capacity_last = chg->batt_capacity;
-
-	// ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-	wtchg_battery_check_eoc_condition(chg);
-
-	//+ ExtB oak-8246, tankaikun@wt, add 20220317, battery capacity smoothing method
-	if(chg->batt_capacity_pre != -EINVAL) {
-		if(chg->batt_protected_mode && chg->batt_capacity_pre <= BATT_PROTECT_SOC_MAX
-				&& chg->batt_capacity_last > BATT_PROTECT_SOC_MAX) {
-			chg->batt_capacity = BATT_PROTECT_SOC_MAX;
-		}
-		soc_change = min(MIN_SOC_CHANGE, abs(chg->batt_capacity - chg->batt_capacity_pre));
-		if (chg->batt_capacity < chg->batt_capacity_pre && chg->batt_capacity != 0)
-			chg->batt_capacity = chg->batt_capacity_pre - soc_change;
-		if (chg->batt_capacity > chg->batt_capacity_pre)
-			chg->batt_capacity = chg->batt_capacity_pre + soc_change;
-
-		// ExtB oak-9702, tankaikun@wt, add 20220317, fix battery protect mode capacity > 60%
-		if(chg->batt_capacity_last > chg->batt_capacity_pre && !chg->vbus_online
-					&& POWER_SUPPLY_TYPEC_PR_NONE == chg->typec_pr_role)
-			chg->batt_capacity = chg->batt_capacity_pre;
-	}
-
-	chg->batt_capacity_pre = chg->batt_capacity;
-	//- ExtB oak-8246, tankaikun@wt, add 20220317, battery capacity smoothing method
-
 #ifdef WT_COMPILE_FACTORY_VERSION
 	if (chg->batt_temp_true <= BATT_TEMP_MIN || chg->batt_temp_true > BATT_TEMP_MAX)
 		chg->batt_capacity = BATT_CAPACITY_DEFAULT_VALUE;
@@ -1305,48 +1097,6 @@ static int wtchg_get_batt_capacity(struct wt_chg *chg)
 
 	return chg->batt_capacity;
 }
-
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-static int wtchg_get_batt_cycle(struct wt_chg *chg)
-{
-	int ret;
-	int cycle;
-	union power_supply_propval val = {0,};
-
-	if(is_device_suspended(chg)){
-		pr_err("wtchg_get_batt_cycle is_device_suspended \n");
-		return chg->batt_cycle;
-	}
-
-	cycle = chg->batt_cycle;
-	chg->bms_psy = power_supply_get_by_name("bms");
-	if (chg->bms_psy) {
-		ret = power_supply_get_property(chg->bms_psy,
-							POWER_SUPPLY_PROP_CYCLE_COUNT, &val);
-		if (ret < 0) {
-			dev_err(chg->dev,
-				"Couldn't get POWER_SUPPLY_PROP_CYCLE_COUNT, ret=%d\n", ret);
-			if(chg->batt_cycle >= 0 && chg->batt_cycle < 999999){
-				return chg->batt_cycle;
-			}
-		}
-		cycle = val.intval;
-	}
-
-	if (cycle > 999999 || cycle < 0) {
-			chg->batt_cycle = BATT_CYCLE_DEFAULT_VALUE;
-	} else {
-		chg->batt_cycle = cycle;
-	}
-
-	// batt cycle test
-	if(chg->batt_debug_cycle){
-		chg->batt_cycle = chg->batt_debug_cycle;
-	}
-
-	return chg->batt_cycle;
-}
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
 
 static int wtchg_get_batt_capacity_level(struct wt_chg *chg)
 {
@@ -1440,8 +1190,6 @@ static void wtchg_init_chg_parameter(struct wt_chg *chg)
 
 	chg->pre_vbus = DEFAULT_HVDCP_VOLT;
 
-	chg->pd_allow_vol = USBIN_ADAPTER_ALLOW_5V;
-
 	if (chg->chg_init_flag == false) {
 		chg->chg_init_flag = true;
 		wtchg_set_slave_input_current(chg, FCC_500_MA);
@@ -1464,11 +1212,6 @@ static int wtchg_hvdcp30_request_adapter_voltage(struct wt_chg *chg, int chr_vol
 	do {
 		retry_cnt++;
 		vchr_before = wtchg_get_vbus_voltage(chg);
-		vchr_delta = abs(vchr_before - chr_volt);
-		if(vchr_delta < 1000){
-			dev_err(chg->dev,"chr_volt have already set (%d, %d) \n", vchr_before, chr_volt);
-			return ret;
-		}
 		wtchg_set_hvdcp_voltage(chg, chg->pre_vbus);
 		ret = wtchg_set_adapter_voltage(chg, chr_volt);
 		msleep(3000);
@@ -1477,7 +1220,6 @@ static int wtchg_hvdcp30_request_adapter_voltage(struct wt_chg *chg, int chr_vol
 		vchr_delta = abs(vchr_after - chr_volt);
 		if ((vchr_delta < 1000) && (ret == 0)) {
 			chg->pre_vbus = chr_volt;
-			wtchg_set_hvdcp_voltage(chg, chg->pre_vbus); // ExtB oak-9702, tankaikun@wt, add 20220509, fix adapter identify SDP | drop vbus to 5V
 			dev_err(chg->dev, "%s ok !: vchr = (%d, %d), vchr_target:%d\n",
 						__func__, vchr_before, vchr_after, chr_volt);	
 			return ret;
@@ -1496,21 +1238,20 @@ static void wtchg_hvdcp30_start_algorithm(struct wt_chg *chg)
 	int vbus;
 	int vbat;
 
-	if(chg->batt_capacity >= 90 || chg->batt_protected_mode_disable_charge || chg->ato_soc_control){
-		dev_err(chg->dev, "%s: capacity > 90 || ato control \n",__func__);
-		wtchg_hvdcp30_request_adapter_voltage(chg, DEFAULT_HVDCP_VOLT);
-	}else{
-		vbat = wtchg_get_batt_volt(chg) /1000;
-		size = ARRAY_SIZE(hvdcp30_profile);
-		for (idx = 0; idx < size; idx++) {
-			if (vbat > (hvdcp30_profile[idx].vbat + 100))
-				continue;
+	vbat = wtchg_get_batt_volt(chg) /1000;
+	size = ARRAY_SIZE(hvdcp30_profile);
+	for (idx = 0; idx < size; idx++) {
+		if (vbat > (hvdcp30_profile[idx].vbat + 100))
+			continue;
 
-			vbus = hvdcp30_profile[idx].vchr;
-			wtchg_hvdcp30_request_adapter_voltage(chg, vbus);
-			break;
-		}
+		vbus = hvdcp30_profile[idx].vchr;
+		wtchg_hvdcp30_request_adapter_voltage(chg, vbus);
+		break;
 	}
+
+	wtchg_set_chg_input_current(chg);
+	wtchg_set_chg_ibat_current(chg);
+
 }
 
 static int wtchg_set_hvdcp20_mode(struct wt_chg *chg, int mode)
@@ -1540,11 +1281,11 @@ static void wtchg_hvdcp20_start_algorithm(struct wt_chg *chg)
 
 	wtchg_get_vbus_voltage(chg);
 	wtchg_get_batt_volt(chg);
-	if (chg->vbus_volt <= HVDCP20_VOLT_6V && chg->batt_capacity < 90 && !chg->batt_protected_mode_disable_charge) {
+	if (chg->vbus_volt <= HVDCP20_VOLT_6V) {
 		do {
 			retry_cnt++;
 			vchr_before = wtchg_get_vbus_voltage(chg);
-			wtchg_set_hvdcp20_mode(chg, POWER_SUPPLY_DP_DM_FORCE_9V);
+			wtchg_set_hvdcp20_mode(chg, WT_HVDCP20_9V);
 			msleep(500);
 			vchr_after = wtchg_get_vbus_voltage(chg);
 			wtchg_get_vbus_online(chg);
@@ -1553,21 +1294,10 @@ static void wtchg_hvdcp20_start_algorithm(struct wt_chg *chg)
 							retry_cnt, retry_cnt_max, vchr_before, vchr_after);
 		} while (chg->vbus_online && (retry_cnt < retry_cnt_max)
 						&& (vchr_after < HVDCP20_VOLT_6V));
-	}else if(chg->vbus_volt > HVDCP20_VOLT_6V && chg->batt_capacity >= 90){
-		do {
-			retry_cnt++;
-			vchr_before = wtchg_get_vbus_voltage(chg);
-			wtchg_set_hvdcp20_mode(chg, POWER_SUPPLY_DP_DM_FORCE_5V);
-			msleep(500);
-			vchr_after = wtchg_get_vbus_voltage(chg);
-			wtchg_get_vbus_online(chg);
-
-			dev_err(chg->dev, "hvdcp20: retry_cnt = (%d, %d), vchr_before:%d, vchr_after:%d\n",
-							retry_cnt, retry_cnt_max, vchr_before, vchr_after);
-		} while (chg->vbus_online && (retry_cnt < retry_cnt_max)
-						&& (vchr_after > HVDCP20_VOLT_6V));
 	}
 
+	wtchg_set_chg_input_current(chg);
+	wtchg_set_chg_ibat_current(chg);
 }
 
 static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
@@ -1577,8 +1307,7 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 	int batt_prev_high_temp = 0;
 	int temp_low_hysteresis = 0;
 	int temp_high_hysteresis = 0;
-	chg->lcd_on=lcd_on;
-	
+
 	//check battery thermal status
 	chg->batt_temp = wtchg_get_batt_temp(chg);
 	if (chg->batt_temp > BATT_TEMP_MIN_THRESH &&
@@ -1648,21 +1377,13 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 
 	wtchg_fast_charger(chg);
 
-	//+ ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-	if(chg->power_off_charge_mode)
-		chg->lcd_on = 0;
-	//- ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-#ifdef CONFIG_DISABLE_TEMP_PROTECT
-	chg->lcd_on = 0;
-#endif
-
 	if (batt_jeita_stat == BATT_TEMP_COLD) {
 		chg->jeita_ibatt = FCC_0_MA;
 		chg->jeita_batt_cv = BATT_NORMAL_CV;
 	} else if (batt_jeita_stat == BATT_TEMP_COOL) {
 
 		if(chg->fast_charger && chg->lcd_on) {
-				chg->jeita_ibatt = FCC_1500_MA;
+				chg->jeita_ibatt = FCC_2000_MA;
 				chg->jeita_batt_cv = BATT_NORMAL_CV;
 		} else{
 			chg->jeita_ibatt = FCC_1500_MA;
@@ -1671,30 +1392,16 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 
 	} else if (batt_jeita_stat == BATT_TEMP_NORMAL) {
 		chg->jeita_batt_cv = BATT_NORMAL_CV;
-		dev_err(chg->dev,  "fast_charger=%d,board_temp=%d,batt_temp=%d\n",chg->fast_charger,chg->board_temp,chg->batt_temp);
 #if defined(DISABLE_BOARD_TEMP_CONTROL)
-		if(chg->fast_charger && chg->lcd_on) {
-			if(chg->batt_temp < BATT_TEMP_29_THRESH ){
-				chg->jeita_ibatt = FCC_2200_MA;
-			} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
-				chg->jeita_ibatt = FCC_1800_MA;
-			} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
-				chg->jeita_ibatt = FCC_1300_MA;
-			} else {
-				chg->jeita_ibatt = FCC_1000_MA;
-			}
-		} else {
-
-			chg->jeita_ibatt = FCC_4000_MA;
-		}
+		chg->jeita_ibatt = FCC_4000_MA;
 #else
 		if (chg->board_temp < BOARD_TEMP_41_THRESH) {
 			if(chg->fast_charger && chg->lcd_on) {
 				if(chg->batt_temp < BATT_TEMP_29_THRESH ){
 					chg->jeita_ibatt = FCC_3000_MA;
-				} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
+				} else if(BATT_TEMP_29_THRESH =< chg->batt_temp < BATT_TEMP_33_THRESH){
 					chg->jeita_ibatt = FCC_2000_MA;
-				} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
+				} else if(BATT_TEMP_33_THRESH =< chg->batt_temp < BATT_TEMP_35_THRESH){
 					chg->jeita_ibatt = FCC_1100_MA;
 				} else {
 					chg->jeita_ibatt = FCC_700_MA;
@@ -1711,9 +1418,9 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 			if(chg->fast_charger && chg->lcd_on) {
 				if(chg->batt_temp < BATT_TEMP_29_THRESH ){
 					chg->jeita_ibatt = FCC_3000_MA;
-				} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
+				} else if(BATT_TEMP_29_THRESH =< chg->batt_temp < BATT_TEMP_33_THRESH){
 					chg->jeita_ibatt = FCC_2000_MA;
-				} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
+				} else if(BATT_TEMP_33_THRESH =< chg->batt_temp < BATT_TEMP_35_THRESH){
 					chg->jeita_ibatt = FCC_1100_MA;
 				} else {
 					chg->jeita_ibatt = FCC_700_MA;
@@ -1730,9 +1437,9 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 			if(chg->fast_charger && chg->lcd_on) {
 				if(chg->batt_temp < BATT_TEMP_29_THRESH ){
 					chg->jeita_ibatt = FCC_3000_MA;
-				} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
+				} else if(BATT_TEMP_29_THRESH =< chg->batt_temp < BATT_TEMP_33_THRESH){
 					chg->jeita_ibatt = FCC_2000_MA;
-				} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
+				} else if(BATT_TEMP_33_THRESH =< chg->batt_temp < BATT_TEMP_35_THRESH){
 					chg->jeita_ibatt = FCC_1100_MA;
 				} else {
 					chg->jeita_ibatt = FCC_700_MA;
@@ -1749,9 +1456,9 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 			if(chg->fast_charger && chg->lcd_on) {
 				if(chg->batt_temp < BATT_TEMP_29_THRESH ){
 					chg->jeita_ibatt = FCC_3000_MA;
-				} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
+				} else if(BATT_TEMP_29_THRESH =< chg->batt_temp < BATT_TEMP_33_THRESH){
 					chg->jeita_ibatt = FCC_2000_MA;
-				} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
+				} else if(BATT_TEMP_33_THRESH =< chg->batt_temp < BATT_TEMP_35_THRESH){
 					chg->jeita_ibatt = FCC_1100_MA;
 				} else {
 					chg->jeita_ibatt = FCC_700_MA;
@@ -1767,9 +1474,9 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 			if(chg->fast_charger && chg->lcd_on) {
 				if(chg->batt_temp < BATT_TEMP_29_THRESH ){
 					chg->jeita_ibatt = FCC_3000_MA;
-				} else if(BATT_TEMP_29_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_33_THRESH){
+				} else if(BATT_TEMP_29_THRESH =< chg->batt_temp < BATT_TEMP_33_THRESH){
 					chg->jeita_ibatt = FCC_2000_MA;
-				} else if(BATT_TEMP_33_THRESH <= chg->batt_temp && chg->batt_temp < BATT_TEMP_35_THRESH){
+				} else if(BATT_TEMP_33_THRESH =< chg->batt_temp < BATT_TEMP_35_THRESH){
 					chg->jeita_ibatt = FCC_1100_MA;
 				} else {
 					chg->jeita_ibatt = FCC_700_MA;
@@ -1786,11 +1493,7 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 	} else if (batt_jeita_stat == BATT_TEMP_WARM) {
 		chg->jeita_batt_cv = BATT_HIGH_TEMP_CV;
 #if defined(DISABLE_BOARD_TEMP_CONTROL)
-		if(chg->fast_charger && chg->lcd_on) {
-			chg->jeita_ibatt = FCC_500_MA;
-		} else {
-			chg->jeita_ibatt = FCC_1500_MA;
-		}
+		chg->jeita_ibatt = FCC_1500_MA;
 #else
 		if (chg->board_temp < BOARD_TEMP_47_THRESH) {
 			if(chg->fast_charger && chg->lcd_on){
@@ -1818,109 +1521,24 @@ static void wtchg_sw_jeita_state_machine(struct wt_chg *chg)
 		chg->jeita_batt_cv = BATT_HIGH_TEMP_CV;
 	}
 
-//#ifdef CONFIG_DISABLE_TEMP_PROTECT
-//	chg->jeita_batt_cv = BATT_HIGH_TEMP_CV;
-//#endif
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+	chg->jeita_batt_cv = BATT_HIGH_TEMP_CV;
+#endif
 
 	dev_err(chg->dev,  "batt_temp=%d, jeita_status=%d, board_temp=%d,lcd_on=%d\n",
 				chg->batt_temp, batt_jeita_stat, chg->board_temp, chg->lcd_on);
 }
 
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-int wtchg_set_batt_cycle_cv(struct wt_chg *chg) {
-	int i,cycle;
-
-	cycle = chg->batt_cycle;
-
-	if(chg->batt_maintain_mode){
-		if(chg->batt_cycle_fv_cfg && chg->fv_levels) {
-			for(i = 0; i < chg->fv_levels; i=i+3) {
-				if((cycle >= chg->batt_cycle_fv_cfg[i]) && (cycle <= chg->batt_cycle_fv_cfg[i+1])){
-					chg->batt_cycle_cv = chg->batt_cycle_fv_cfg[i+2];
-					//pr_err("%s cycle_cv = %d\n", __func__, chg->batt_cycle_fv_cfg[i+2]);
-					return 0;
-				}
-			}
-		} else {
-			chg->batt_maintain_mode = false;
-			chg->batt_cycle_cv = BATT_NORMAL_CV;
-			pr_err("%s batt_cycle_fv_cfg or fv_levels invalue and disable battmaintain control \n", __func__);
-			return 1;
-		}
-	}else{
-		chg->batt_cycle_cv = BATT_NORMAL_CV;
-	}
-
-	return 0;
-}
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
-//+ ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-static void wtchg_battery_check_recharge_condition(struct wt_chg *chg)
-{
-	if (chg->batt_capacity_last > chg->batt_capacity_recharge)
-		return;
-
-	/* Report recharge to charger for SOC based resume of charging */
-	if (chg->eoc_reported) {
-		chg->eoc_reported = false;
-		// recharge
-		wtchg_set_main_chg_enable(chg, false);
-		msleep(10);
-		wtchg_set_main_chg_enable(chg, true);
-		dev_err(chg->dev,"recharge batt eoc_reported = %d \n", chg->eoc_reported);
-	}
-}
-
-static void wtchg_battery_check_eoc_condition(struct wt_chg *chg)
-{
-	if(chg->batt_capacity_last == 100 && chg->chg_status == POWER_SUPPLY_STATUS_FULL
-			&& chg->eoc_reported == false){
-		dev_err(chg->dev,"Report EOC to charger\n");
-		chg->eoc_reported = true;
-	}
-
-	if(chg->eoc_reported == true){
-		chg->batt_capacity = 100;
-	}
-}
-//- ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-
 static void wtchg_charge_strategy_machine(struct wt_chg *chg)
 {
-	int batt_cv = 0;
 
 	//check and set battery thermal hysteresis
 	wtchg_sw_jeita_state_machine(chg);
-	wtchg_set_batt_cycle_cv(chg);
 
 	switch (chg->real_type) {
 	case POWER_SUPPLY_TYPE_USB_PD:
-		if (chg->pd_cur_max >= PD_INPUT_CURRENT_2000_MA && chg->pd_allow_vol>=USBIN_ADAPTER_ALLOW_9V) { //9V2A
-			chg->chg_type_ibatt = FCC_4000_MA;
-			chg->chg_type_input_curr = FCC_2200_MA;
-		} else if (chg->pd_cur_max >= PD_INPUT_CURRENT_1000_MA && chg->pd_allow_vol>=USBIN_ADAPTER_ALLOW_9V) { // 9V1A
-			chg->chg_type_ibatt = FCC_2000_MA;
-			chg->chg_type_input_curr = FCC_1000_MA;
-		} else if (chg->pd_cur_max >= PD_INPUT_CURRENT_3000_MA && chg->pd_allow_vol>=USBIN_ADAPTER_ALLOW_5V) { // 5V3A
-			chg->chg_type_ibatt = FCC_2200_MA;
-			chg->chg_type_input_curr = FCC_2500_MA;
-		} else if (chg->pd_cur_max  >= PD_INPUT_CURRENT_2000_MA  && chg->pd_allow_vol >= USBIN_ADAPTER_ALLOW_5V) { // 5V2A
-			chg->chg_type_ibatt = FCC_2000_MA;
-			chg->chg_type_input_curr = FCC_2000_MA;
-		} else if (chg->pd_cur_max  >= PD_INPUT_CURRENT_500_MA  && chg->pd_allow_vol >= USBIN_ADAPTER_ALLOW_5V) { // 5V0.5A
-			chg->chg_type_ibatt = FCC_500_MA;
-			chg->chg_type_input_curr = FCC_500_MA;
-		} else if (chg->pd_cur_max >=  PD_INPUT_CURRENT_100_MA  && chg->pd_allow_vol >= USBIN_ADAPTER_ALLOW_5V) { // 5V0.1A
-			chg->chg_type_ibatt = FCC_100_MA;
-			chg->chg_type_input_curr = FCC_100_MA;
-		} else if (chg->pd_cur_max  ==  PD_INPUT_CURRENT_0_MA) { // 5V0A
-			chg->chg_type_ibatt = FCC_0_MA;
-			chg->chg_type_input_curr = FCC_100_MA;
-		} else {
-			chg->chg_type_ibatt = FCC_500_MA;
-			chg->chg_type_input_curr = FCC_500_MA;
-		}
+		chg->chg_type_ibatt = FCC_4000_MA;
+		chg->chg_type_input_curr = FCC_2200_MA;
 		break;
 	case POWER_SUPPLY_TYPE_USB_HVDCP:
 		chg->chg_type_ibatt = FCC_4000_MA;
@@ -1952,33 +1570,10 @@ static void wtchg_charge_strategy_machine(struct wt_chg *chg)
 		chg->chg_type_input_curr = FCC_500_MA;
 		break;
 	}
-	if(!chg->power_off_charge_mode && chg->typec_cc_orientation == 0 && chg->vbus_online)
+	if(chg->typec_cc_orientation == 0 && chg->vbus_online)
 	{
 		chg->chg_type_ibatt = FCC_650_MA;
 	}
-
-	//+ ExtB oak-9702, tankaikun@wt, add 20220411, fix battery protect mode capacity > 60%
-	if(chg->batt_protected_mode && chg->chg_type_ibatt >= FCC_1500_MA) {
-		if(chg->batt_capacity_last >= BATT_PROTECT_SOC_CURRENT_LIMIT_FIRST && chg->batt_capacity_last < BATT_PROTECT_SOC_CURRENT_LIMIT_SECOND)
-			chg->chg_type_ibatt = FCC_1500_MA;
-		else if(chg->batt_capacity_last >= BATT_PROTECT_SOC_CURRENT_LIMIT_SECOND)
-			chg->chg_type_ibatt = FCC_1000_MA;
-	}
-	//- ExtB oak-9702, tankaikun@wt, add 20220411, fix battery protect mode capacity > 60%
-
-	//+ ExtB oak-9702, tankaikun@wt, add 20220506, fix adapter cannot identify type
-	if(chg->ato_soc_control || chg->batt_protected_mode_disable_suspend) {
-		chg->chg_type_ibatt = FCC_0_MA;
-		chg->chg_type_input_curr = FCC_100_MA;
-	}
-	//- ExtB oak-9702, tankaikun@wt, add 20220506, fix adapter cannot identify type
-
-	//+ ExtB oak-11581,tankaikun.wt add 20220615, fix term current error too large
-	if(chg->batt_capacity_last > 98 && chg->chg_type_ibatt > FCC_1000_MA){
-		chg->chg_type_ibatt = FCC_1000_MA;
-	}
-	//- ExtB oak-11581,tankaikun.wt add 20220615, fix term current error too large
-
 	//choose smaller charging current
 	if (chg->chg_type_ibatt <= chg->jeita_ibatt) {
 		chg->chg_ibatt = chg->chg_type_ibatt;
@@ -1993,54 +1588,26 @@ static void wtchg_charge_strategy_machine(struct wt_chg *chg)
 	} else {
 		chg->slave_chg_enable = false;
 	}
-	batt_cv = min(chg->jeita_batt_cv, chg->batt_cycle_cv);
 
 	dev_err(chg->dev,  "jeita_batt_cv=%d, jeita_batt_cv_pre=%d, input_curr=%d, input_curr_pre=%d, slave_enable=%d\n",
 				chg->jeita_batt_cv, chg->jeita_batt_cv_pre,
 				chg->chg_type_input_curr, chg->chg_type_input_curr_pre,
 				chg->slave_chg_enable);
-	dev_err(chg->dev, "batt_maintain_mode=%d batt_cycle=%d batt_cycle_cv=%d batt_cycle_cv_pre=%d batt_cv= %d\n",
-				chg->batt_maintain_mode, chg->batt_cycle, chg->batt_cycle_cv, chg->batt_cycle_cv_pre, batt_cv);
-	dev_err(chg->dev,"pd_cur_max=%d pd_max_vol=%d pd_min_vol=%d pd_allow_vol=%d \n",
-				chg->pd_cur_max, chg->pd_max_vol, chg->pd_min_vol, chg->pd_allow_vol);
 
 	//set charge cv value
-	if (chg->jeita_batt_cv  != chg->jeita_batt_cv_pre || chg->batt_cycle_cv_pre != chg->batt_cycle_cv) {
+	if (chg->jeita_batt_cv  != chg->jeita_batt_cv_pre) {
 		chg->jeita_batt_cv_pre = chg->jeita_batt_cv;
-		wtchg_set_main_chg_volt(chg, batt_cv);
-		wtchg_set_slave_chg_volt(chg, batt_cv);
-	}
-
-	//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	if(chg->batt_cycle_cv_pre != chg->batt_cycle_cv){
-		chg->batt_cycle_cv_pre = chg->batt_cycle_cv;
-		wtchg_set_bms_cycle_cv(chg);
-	}
-	//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
+		wtchg_set_main_chg_volt(chg, chg->jeita_batt_cv);
+		wtchg_set_slave_chg_volt(chg, chg->jeita_batt_cv);
+	} 
 
 	switch (chg->real_type) {
 	case POWER_SUPPLY_TYPE_USB_HVDCP:
-	    //+ ooakt-4019, xiejiaming.wt, mod 20230324, disable hvdcp alg to short status upload time when protectmode
-	    if (chg->batt_protected_mode ) {
-			//wtchg_set_hvdcp20_mode(chg, POWER_SUPPLY_DP_DM_FORCE_5V);
-			pr_err("%s:PASS QC2\n", __func__);
-		} else {
-			wtchg_hvdcp20_start_algorithm(chg);
-		}
-		wtchg_set_chg_input_current(chg);
-		wtchg_set_chg_ibat_current(chg);
+		wtchg_hvdcp20_start_algorithm(chg);
 		break;
 	case POWER_SUPPLY_TYPE_USB_HVDCP_3:
 	case POWER_SUPPLY_TYPE_USB_HVDCP_3P5:
-	    if (chg->batt_protected_mode ) {
-			//wtchg_set_adapter_voltage(chg, DEFAULT_HVDCP_VOLT);
-			pr_err("%s:PASS QC3\n", __func__);
-		} else {
-			wtchg_hvdcp30_start_algorithm(chg);
-		}
-		wtchg_set_chg_input_current(chg);
-		wtchg_set_chg_ibat_current(chg);
-	    //- ooakt-4019, xiejiaming.wt, mod 20230324, disable hvdcp alg to short status upload time when protectmode
+		wtchg_hvdcp30_start_algorithm(chg);
 		break;
 	case POWER_SUPPLY_TYPE_USB:
 	case POWER_SUPPLY_TYPE_USB_DCP:
@@ -2104,12 +1671,7 @@ static int wtchg_batt_init_config(struct wt_chg *chg)
 	chg->ship_mode = 0;
 	chg->battery_exist = true;
 
-	// ExtB oak-8246, tankaikun@wt, add 20220317, battery capacity smoothing method
-	chg->batt_capacity_pre = -EINVAL;
-	chg->batt_capacity_last = -EINVAL;
-	chg->fake_capacity = -EINVAL;
-
-	// ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
+	//+ ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
 	chg->float_recheck_cnt = 0;
 
 	// ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
@@ -2121,17 +1683,6 @@ static int wtchg_batt_init_config(struct wt_chg *chg)
 
 	chg->typec_pr_role = POWER_SUPPLY_TYPEC_PR_NONE;
 	//- ExtB oak-3916, tankaikun@wt, add 20220209, modify battery protect mode
-
-	//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	chg->batt_maintain_mode = 1; // ExtB OAK-7574, tankaikun@wt, change batt maintain default value true
-	chg->batt_cycle = 0;
-	chg->batt_cycle_cv = BATT_NORMAL_CV;
-
-	chg->batt_debug_cycle = 0;
-	//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
-	// ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-	chg->power_off_charge_mode = 0;
 
 	return ret;
 }
@@ -2165,17 +1716,15 @@ static int wtchg_ato_charge_manage(struct wt_chg *chg)
 #ifdef WT_COMPILE_FACTORY_VERSION
 	if (chg->batt_capacity >= ATO_BATT_SOC_MAX && !chg->otg_enable) {
 		chg->ato_soc_control = true;
-#if 0
 		wtchg_set_main_chg_enable(chg, false);
 		wtchg_set_main_input_suspend(chg, true);
+
 		wtchg_set_slave_chg_enable(chg, false);
 		wtchg_set_slave_input_suspend(chg, true);
-#endif
 		dev_err(chg->dev, "ATO version capacity: %d, ato_soc_flag: %d\n",
 								chg->batt_capacity, chg->ato_soc_control);
 	} else if (chg->batt_capacity <= ATO_BATT_SOC_MIN && chg->ato_soc_control) {
 		chg->ato_soc_control = false;
-#if 0
 		wtchg_set_main_chg_enable(chg, true);
 		wtchg_set_main_input_suspend(chg, false);
 
@@ -2183,7 +1732,6 @@ static int wtchg_ato_charge_manage(struct wt_chg *chg)
 			wtchg_set_slave_chg_enable(chg, true);
 			wtchg_set_slave_input_suspend(chg, false);
 		}
-#endif
 		dev_err(chg->dev, "ATO version capacity: %d, ato_soc_flag: %d\n",
 								chg->batt_capacity, chg->ato_soc_control);
 	}
@@ -2196,7 +1744,6 @@ static int wtchg_battery_maintain_charge_manage(struct wt_chg *chg)
 {
 	int ret = 0;
 
-#if 0
 	if ((chg->batt_maintain_mode == true)
 			&& (chg->batt_capacity >= BATT_MAINTAIN_SOC_MAX)) {
 		chg->maintain_soc_control = true;
@@ -2220,7 +1767,6 @@ static int wtchg_battery_maintain_charge_manage(struct wt_chg *chg)
 		dev_err(chg->dev, "Maintain mode capacity: %d, maintain_soc_control: %d\n",
 								chg->batt_capacity, chg->maintain_soc_control);
 	}
-#endif
 
 	return ret;
 }
@@ -2295,11 +1841,11 @@ static int wtchg_float_charge_type_check(struct wt_chg *chg)
 	int ret = 0;
 	union power_supply_propval val = {0,};
 
-	//dev_err(chg->dev, "wtchg_float_charge_type_check vbus_online=%d real_type=%d float_recheck_cnt=%d\n", 
-	//			chg->vbus_online , chg->real_type, chg->float_recheck_cnt);
+	dev_err(chg->dev, "wtchg_float_charge_type_check vbus_online=%d real_type=%d float_recheck_cnt=%d\n", 
+				chg->vbus_online , chg->real_type, chg->float_recheck_cnt);
 
 	if(chg->vbus_online == 1 && chg->real_type == 16){
-		dev_err(chg->dev, "wtchg_float_charge_type_check recheck \n");
+		pr_err("wtchg_float_charge_type_check recheck \n");
 		chg->float_recheck_cnt++;
 		chg->hvdcp_psy = power_supply_get_by_name("wt_hvdcp");
 		if (chg->hvdcp_psy) {
@@ -2338,39 +1884,32 @@ static void wt_chg_main(struct work_struct *work)
 {
 	struct wt_chg *chg = container_of(work,
 							struct wt_chg, wt_chg_work.work);
-	//unsigned long flags;
+	unsigned long flags;
 	ktime_t now, add, resume_time;
-	int is_awake=0;
-	//+ OOAKT-1675, xiejiaming.wt mod, 20230301, fix periodly float waring before pop up float windows
-	union power_supply_propval val = {0,};
-	int ret = 0;
-	//- OOAKT-1675, xiejiaming.wt mod, 20230301, fix periodly float waring before pop up float windows
 
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
-	//spin_lock_irqsave(&chg->ws_lock, flags);
+	spin_lock_irqsave(&chg->ws_lock, flags);
 	if (chg->main_chg_ws && !atomic_read(&chg->pm_awake_active)){
 		__pm_stay_awake(chg->main_chg_ws);
 		atomic_set(&chg->pm_awake_active, 1);
 	}
-	//spin_unlock_irqrestore(&chg->ws_lock, flags);
+	spin_unlock_irqrestore(&chg->ws_lock, flags);
 
 	now = ktime_get_boottime();
 	add = ktime_set(5000 / MSEC_PER_SEC,
 				(5000 % MSEC_PER_SEC) * NSEC_PER_MSEC);
 	resume_time = ktime_add(now, add);
 	chg->resume_main_work_time = resume_time;
-	//dev_err(chg->dev, "wt_chg_main now = %lld resume_time = %lld \n", ktime_to_ms(now), ktime_to_ms(resume_time));
+	dev_err(chg->dev, "wt_chg_main now = %lld resume_time = %lld \n", ktime_to_ms(now), ktime_to_ms(resume_time));
 
 	if(is_device_suspended(chg)){
 		pr_err("wt_chg_main device is suspended schedule next work \n");
 		schedule_delayed_work(&chg->wt_chg_work, msecs_to_jiffies(chg->interval_time));
 
-		//spin_lock_irqsave(&chg->ws_lock, flags);
-		if (chg->main_chg_ws && atomic_read(&chg->pm_awake_active)){
+		spin_lock_irqsave(&chg->ws_lock, flags);
+		if (chg->main_chg_ws && atomic_read(&chg->pm_awake_active))
 			__pm_relax(chg->main_chg_ws);
-			atomic_set(&chg->pm_awake_active, 0);
-		}
-		//spin_unlock_irqrestore(&chg->ws_lock, flags);
+		spin_unlock_irqrestore(&chg->ws_lock, flags);
 		return ;
 	}
 	//- ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
@@ -2385,7 +1924,6 @@ static void wt_chg_main(struct work_struct *work)
 	wtchg_get_batt_health(chg);
 	wtchg_get_batt_capacity(chg);
 	wtchg_get_vbus_voltage(chg);
-	wtchg_get_batt_cycle(chg); // ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
 	wtchg_float_charge_type_check(chg); // ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
 
 	if (chg->usb_online ||chg->ac_online) {
@@ -2394,52 +1932,35 @@ static void wt_chg_main(struct work_struct *work)
 		wtchg_get_usb_port_temp(chg, &chg->usb_port_temp);
 		wtchg_get_board_pcb_temp(chg, &chg->board_temp);
 		wtchg_battery_protect_charge_manage(chg);
-		wtchg_ato_charge_manage(chg);
 		wtchg_charge_strategy_machine(chg);
 		wtchg_battery_maintain_charge_manage(chg);
-		wtchg_battery_check_recharge_condition(chg);
+		wtchg_ato_charge_manage(chg);
 
 		chg->chg_init_flag = false;
-		if(chg->real_type == 16 && chg->power_off_charge_mode)
-			chg->interval_time = FLOAT_CHARGE_ONLINE_INTERVAL_MS;
-		else
-			chg->interval_time = CHARGE_ONLINE_INTERVAL_MS;
+		chg->interval_time = CHARGE_ONLINE_INTERVAL_MS;
 	} else {
 		wtchg_init_chg_parameter(chg);
 		chg->interval_time = CHARGE_ONLINE_INTERVAL_MS;
 		wtchg_battery_protect_charge_manage(chg);
 		wtchg_ato_charge_manage(chg);
-		chg->ato_soc_control = false;
-		chg->eoc_reported = false;
 	}
 
 	wtchg_get_batt_status(chg);
-	pr_err("chg_type: %d, vbus_online: %d, vbus_volt: %d, chg_status: %d, batt_volt: %d, batt_current: %d, temp: %d, last_soc: %d, health: %d, capacity: %d\n",
+	pr_err("chg_type: %d, vbus_online: %d, vbus_volt: %d, chg_status: %d, batt_volt: %d, batt_current: %d, temp: %d, health: %d, capacity: %d\n",
 			chg->real_type, chg->vbus_online, chg->vbus_volt,
 			chg->chg_status, chg->batt_volt, chg->chg_current,
-			chg->batt_temp, chg->batt_capacity_last, chg->batt_health, chg->batt_capacity);
+			chg->batt_temp, chg->batt_health, chg->batt_capacity);
 
-	pr_err("chg_temp: %d, usb_temp: %d, board_temp: %d, usb_online: %d, ac_online: %d, pd_active:%d typec_pr_role:%d typec_cc:%d chg_suspend:%d ato_soc_controll:%d\n",
+	pr_err("chg_temp: %d, usb_temp: %d, board_temp: %d, usb_online: %d, ac_online: %d, pd_active:%d typec_pr_role:%d \n",
 			chg->main_chg_temp, chg->usb_port_temp, chg->board_temp,
-			chg->usb_online, chg->ac_online, chg->pd_active, chg->typec_pr_role,
-			chg->typec_cc_orientation,wtchg_get_main_input_suspend(chg),chg->ato_soc_control);
+			chg->usb_online, chg->ac_online, chg->pd_active, chg->typec_pr_role);
 
 	/* Update userspace */
 	if (chg->batt_psy)
 		power_supply_changed(chg->batt_psy);
-	//+ OOAKT-1675, xiejiaming.wt mod, 20230301, fix periodly float waring before pop up float windows
-	if (chg->usb_psy) {
-		if (16 == chg->real_type &&  0 == chg->vbus_online && 0 == chg->vbus_volt) {
-			val.intval = 0;
-			pr_err("%s: force setting real_type to  unknown", __func__);
-			ret = power_supply_set_property(chg->usb_psy, POWER_SUPPLY_PROP_REAL_TYPE, &val);
-			if (ret < 0) {
-				pr_err("%s: force setting real_type failed", __func__);
-			}
-		}
+
+	if (chg->usb_psy)
 		power_supply_changed(chg->usb_psy);
-	}
-	//- OOAKT-1675, xiejiaming.wt mod, 20230301, fix periodly float waring before pop up float windows
 
 	if (chg->ac_psy)
 		power_supply_changed(chg->ac_psy);
@@ -2447,13 +1968,10 @@ static void wt_chg_main(struct work_struct *work)
 	schedule_delayed_work(&chg->wt_chg_work, msecs_to_jiffies(chg->interval_time));
 
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
-	//spin_lock_irqsave(&chg->ws_lock, flags);
-	is_awake = is_float_offmode_chg_awake(chg);
-	if (chg->main_chg_ws && atomic_read(&chg->pm_awake_active) && !is_awake){
+	spin_lock_irqsave(&chg->ws_lock, flags);
+	if (chg->main_chg_ws && atomic_read(&chg->pm_awake_active))
 		__pm_relax(chg->main_chg_ws);
-		atomic_set(&chg->pm_awake_active, 0);
-	}
-	//spin_unlock_irqrestore(&chg->ws_lock, flags);
+	spin_unlock_irqrestore(&chg->ws_lock, flags);
 	//- ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend 
 
 }
@@ -2462,7 +1980,6 @@ static int wtchg_batt_parse_dt(struct wt_chg *chg)
 {
 	struct device_node *node = chg->dev->of_node;
 	int ret = 0;
-	int byte_len;
 
 	if (!node) {
 		pr_err("device tree node missing\n");
@@ -2489,34 +2006,6 @@ static int wtchg_batt_parse_dt(struct wt_chg *chg)
 		chg->batt_iterm = 300000;
 	else
 		pr_err("batt_iterm: %d\n",chg->batt_iterm);
-
-	//+ ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-	ret = of_property_read_u32(node,
-				"qcom,auto-recharge-soc", &chg->batt_capacity_recharge);
-	if (ret < 0)
-		chg->batt_capacity_recharge = 98;
-	else
-		pr_err("recharge_capacity: %d\n",chg->batt_capacity_recharge);
-	//- ExtB OAK-10058, tankaikun@wt, add 20220228, fix charge status is full but capacity is lower than 100%
-
-	//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	if (of_find_property(node, "wt,batt-cycle-ranges", &byte_len)) {
-		chg->batt_cycle_fv_cfg = devm_kzalloc(chg->dev, byte_len, GFP_KERNEL);
-		if(chg->batt_cycle_fv_cfg) {
-			chg->fv_levels = byte_len / sizeof(u32);
-
-			ret = of_property_read_u32_array(node,
-				"wt,batt-cycle-ranges",
-				chg->batt_cycle_fv_cfg,
-				chg->fv_levels);
-			if (ret < 0) {
-				dev_err(chg->dev,
-					"Couldn't read battery maintain limits rc = %d\n", ret);
-				chg->batt_cycle_fv_cfg = NULL;
-			}
-		}
-	}
-	//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
 
 	ret = get_iio_channel(chg, "main_chg_therm", &chg->main_chg_therm);
 	if (ret < 0) {
@@ -2546,28 +2035,8 @@ static ssize_t show_startcharging_test(struct device *dev,
 	struct wt_chg *chg = power_supply_get_drvdata(psy);
 
 	chg->start_charging_test = true;
-	//+ ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
-	if (chg->batt_protected_mode ) {
-		wtchg_set_main_chg_enable(chg, false);
-		pr_err("%s:due to protectedmode, pass enable charger\n", __func__);
-	} else {
-		wtchg_set_main_chg_enable(chg, chg->start_charging_test);
-	}
-	//- ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
+	wtchg_set_main_chg_enable(chg, chg->start_charging_test);
 	wtchg_set_main_input_suspend(chg, !chg->start_charging_test);
-
-	//+ ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-	//+ ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
-	if (chg->batt_protected_mode ) {
-		wtchg_set_slave_chg_enable(chg, false);
-		pr_err("%s:due to protectedmode, pass enable charger\n", __func__);
-	} else {
-		wtchg_set_slave_chg_enable(chg, chg->start_charging_test);
-	}
-	//- ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
-	wtchg_set_slave_input_suspend(chg, !chg->start_charging_test);
-	//- ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-
 	dev_err(chg->dev, "set: startcharging_test = %d\n", chg->start_charging_test);
 
 	return sprintf(buf, "startcharging_test = %d\n", chg->start_charging_test);
@@ -2595,12 +2064,6 @@ static ssize_t show_stopcharging_test(struct device *dev,
 	chg->start_charging_test = false;
 	wtchg_set_main_chg_enable(chg, chg->start_charging_test);
 	wtchg_set_main_input_suspend(chg, !chg->start_charging_test);
-
-	//+ ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-	wtchg_set_slave_chg_enable(chg, chg->start_charging_test);
-	wtchg_set_slave_input_suspend(chg, !chg->start_charging_test);
-	//- ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-
 	dev_err(chg->dev, "set: stopcharging_test = %d\n", chg->start_charging_test);
 
 	return sprintf(buf, "stopcharging_test = %d\n", chg->start_charging_test);
@@ -2837,25 +2300,8 @@ static ssize_t store_battery_protected(struct device *dev,
 			if(wtchg_get_main_input_suspend(chg))
 				wtchg_set_main_input_suspend(chg, false);
 			//- ExtB OAK-3916, tankaikun@wt, add 20220209, add battery protect mode
-
-			//+ ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
-			wtchg_set_main_chg_enable(chg, !chg->batt_protected_mode);
-			wtchg_set_slave_chg_enable(chg, !chg->batt_protected_mode);
-			//- ooakt-3734, xiejiaming.wt, mod, 20230413, fix 61% drop 60% status error
-
-			//+ ExtB OAK-9422, tankaikun@wt, add 20220407, open/close battery protect mode battery status update slowly
-			if(chg->typec_pr_role == POWER_SUPPLY_TYPEC_PR_SINK){
-				cancel_delayed_work_sync(&chg->wt_chg_work);
-				schedule_delayed_work(&chg->wt_chg_work, 0);
-			}
-			//- ExtB OAK-9422, tankaikun@wt, add 20220407, open/close battery protect mode battery status update slowly
 		} else if  (protected == 1) {
 			chg->batt_protected_mode = true;
-
-	        //+ ooakt-3745, xiejiaming.wt, mod 20230324, disable charging when protectedmod is open
-			wtchg_set_main_chg_enable(chg, !chg->batt_protected_mode);
-			wtchg_set_slave_chg_enable(chg, !chg->batt_protected_mode);
-	        //- ooakt-3745, xiejiaming.wt, mod 20230324, disable charging when protectedmod is open
 
 			//+ ExtB OAK-3916, tankaikun@wt, add 20220209, add battery protect mode
 			if ((chg->batt_protected_mode == true)
@@ -2873,13 +2319,6 @@ static ssize_t store_battery_protected(struct device *dev,
 				chg->batt_protected_mode_disable_suspend = true;
 			}
 			//- ExtB OAK-3916, tankaikun@wt, add 20220209, add battery protect mode
-
-			//+ ExtB OAK-9422, tankaikun@wt, add 20220407, open/close battery protect mode battery status update slowly
-			if(chg->typec_pr_role == POWER_SUPPLY_TYPEC_PR_SINK){
-				cancel_delayed_work_sync(&chg->wt_chg_work);
-				schedule_delayed_work(&chg->wt_chg_work, 0);
-			}
-			//- ExtB OAK-9422, tankaikun@wt, add 20220407, open/close battery protect mode battery status update slowly
 		}
 	}
 
@@ -2887,63 +2326,6 @@ static ssize_t store_battery_protected(struct device *dev,
 }
 static DEVICE_ATTR(battery_protected, 0664, show_battery_protected, store_battery_protected);
 
-//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-static ssize_t show_batt_cycle_test(struct device *dev,
-											struct device_attribute *attr, char *buf)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct wt_chg *chg = power_supply_get_drvdata(psy);
-
-	return sprintf(buf, "real: batt_debug_cycle = %d\n", chg->batt_debug_cycle);
-}
-
-static ssize_t store_batt_cycle_test(struct device *dev,
-											struct device_attribute *attr,
-											const char *buf, size_t size)
-{
-	int cycle = 0;
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct wt_chg *chg = power_supply_get_drvdata(psy);
-
-	if (kstrtoint(buf, 10, &cycle) == 0) {
-		if ((cycle > 0) && (cycle < 999999)) {
-			chg->batt_debug_cycle = cycle;
-		}
-	}
-
-	return size;
-}
-static DEVICE_ATTR(batt_cycle_test, 0664, show_batt_cycle_test, store_batt_cycle_test);
-//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-
-//+ ooakt-97, xiejiaming.wt add 20230209, modify status while protected
-static ssize_t show_get_charge_type(struct device *dev,
-											struct device_attribute *attr, char *buf)
-{
-	int is_pd = 0;
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct wt_chg *chg = power_supply_get_drvdata(psy);
-	if (POWER_SUPPLY_PD_PPS_ACTIVE == chg->pd_active) {
-		is_pd = 1;
-	} else if (POWER_SUPPLY_TYPE_USB_FLOAT == chg->real_type) {
-		is_pd = 2;
-	}
-
-	return sprintf(buf, "%d\n", is_pd);
-}
-
-static ssize_t store_get_charge_type(struct device *dev,
-											struct device_attribute *attr,
-											const char *buf, size_t size)
-{
-	struct power_supply *psy = dev_get_drvdata(dev);
-	struct wt_chg *chg = power_supply_get_drvdata(psy);
-	dev_err(chg->dev,  "Couldn't support write: get_charge_type !\n");
-	return size;
-}
-static DEVICE_ATTR(get_charge_type, 0664, show_get_charge_type, store_get_charge_type);
-
-//+ ooakt-97, xiejiaming.wt add 20230209, modify status while protected
 
 static enum power_supply_property wt_batt_props[] = {
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
@@ -2956,7 +2338,6 @@ static enum power_supply_property wt_batt_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
-	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
 	POWER_SUPPLY_PROP_TEMP,
@@ -2999,12 +2380,6 @@ static int wt_batt_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		val->intval = wtchg_get_batt_current(chg);
-		break;
-	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		if(!chg->vbus_online)
-			val->intval = FCC_0_MA;
-		else
-			val->intval = chg->chg_ibatt;
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
 		val->intval = wtchg_get_batt_current_max(chg);
@@ -3067,9 +2442,7 @@ static int wt_batt_set_prop(struct power_supply *psy,
 		ret = wtchg_batt_set_system_temp_level(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
-		if(val->intval >= 0 && val->intval <= 100){
-			chg->fake_capacity = val->intval;
-		}
+		//rc = smblib_set_prop_batt_capacity(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		//chg->batt_profile_fv_uv = val->intval;
@@ -3100,6 +2473,29 @@ static int wt_batt_prop_is_writeable(struct power_supply *psy,
 
 	return 0;
 }
+
+static ssize_t show_get_charge_type(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int is_pd = 0;
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct wt_chg *chg = power_supply_get_drvdata(psy);
+
+	if (POWER_SUPPLY_PD_PPS_ACTIVE == chg->pd_active)
+		is_pd = 1;
+	else if (POWER_SUPPLY_TYPE_USB_FLOAT == chg->real_type)
+		is_pd = 2;
+
+	return sprintf(buf, "%d\n", is_pd);
+}
+
+static ssize_t store_get_charge_type(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	return size;
+}
+
+static DEVICE_ATTR(get_charge_type, 0664, show_get_charge_type, store_get_charge_type);
 
 static const struct power_supply_desc batt_psy_desc = {
 	.name = "battery",
@@ -3163,16 +2559,9 @@ static int wt_init_batt_psy(struct wt_chg *chg)
 		pr_err("Couldn't create file: battery_protected !\n");
 	}
 
-	//+ ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	if (device_create_file(&chg->batt_psy->dev, &dev_attr_batt_cycle_test)) {
-		pr_err("Couldn't create file: board_temp_test !\n");
-	}
-	//- ExtB OAK-5741, tankaikun@wt, add 20220228, add battery maintain mode
-	//+ ooakt-97, xiejiaming.wt add 20230209, modify status while protected
 	if (device_create_file(&chg->batt_psy->dev, &dev_attr_get_charge_type)) {
 		pr_err("Couldn't create file: get_charge_type !\n");
 	}
-	//- ooakt-97, xiejiaming.wt add 20230209, modify status while protected
 
 	return ret;
 }
@@ -3209,7 +2598,6 @@ static int wt_ac_get_prop(struct power_supply *psy,
 			val->intval = 0;
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
-		wtchg_get_vbus_online(chg);
 		val->intval = wtchg_get_ac_online(chg);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
@@ -3358,7 +2746,6 @@ static int wt_usb_get_prop(struct power_supply *psy,
 		val->intval = 1;
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
-		wtchg_get_vbus_online(chg);
 		val->intval = wtchg_get_usb_online(chg);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
@@ -3471,10 +2858,10 @@ static int wt_usb_set_prop(struct power_supply *psy,
 		wtchg_pd_usb_switch(chg);
 		break;
 	case POWER_SUPPLY_PROP_PD_VOLTAGE_MIN:
-		wtchg_set_prop_pd_voltage_min(chg, val);
+		chg->pd_min_vol = val->intval;
 		break;
 	case POWER_SUPPLY_PROP_PD_VOLTAGE_MAX:
-		wtchg_set_prop_pd_voltage_max(chg, val);
+		chg->pd_max_vol = val->intval;
 		break;
 	case POWER_SUPPLY_PROP_PD_CURRENT_MAX:
 		chg->pd_cur_max = val->intval;
@@ -3492,17 +2879,15 @@ static int wt_usb_set_prop(struct power_supply *psy,
 //+Bug 697289 ,lishuwen.wt,ADD,20211027, add typec cc orientation node
 	case POWER_SUPPLY_PROP_TYPEC_CC_ORIENTATION:
 		chg->typec_cc_orientation = val->intval;
+		if(!chg->typec_cc_orientation)
+			chg->ato_soc_control = false;
 		break;
 //-Bug 697289 ,lishuwen.wt,ADD,20211027, add typec cc orientation node
 //+ ExtB 4980,tankaikun,add,20220219, add battery protect
 	case POWER_SUPPLY_PROP_TYPEC_POWER_ROLE:
 		chg->typec_pr_role = val->intval;
-		//+ ExtB 8942,tankaikun,add,20220328, modify charger state update slowly
-		if((chg->ato_soc_control || chg->batt_protected_mode_disable_suspend) && chg->typec_pr_role == 0){
-			cancel_delayed_work_sync(&chg->wt_chg_work);
-			schedule_delayed_work(&chg->wt_chg_work, 0);
-		}
-		//- ExtB 8942,tankaikun,add,20220328, modify charger state update slowly
+		//cancel_delayed_work_sync(&chg->wt_chg_work);
+		//schedule_delayed_work(&chg->wt_chg_work, 0);
 		break;
 //- ExtB 4980,tankaikun,add,20220219, add battery protect
 	default:
@@ -3572,25 +2957,6 @@ static int wt_init_usb_psy(struct wt_chg *chg)
 	return 0;
 }
 
-//+ ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-static int get_boot_mode(){
-	char *bootmode_string = NULL;
-	char bootmode_start[32] = " ";
-	int rc;
-
-	bootmode_string = strstr(saved_command_line,"androidboot.mode=");
-	if(NULL != bootmode_string){
-		strncpy(bootmode_start, bootmode_string+17, 7);
-		rc = strncmp(bootmode_start, "charger", 7);
-		if(0 == rc){
-			pr_err("OFF charger mode\n");
-			return 1;
-		}
-	}
-	return 0;
-}
-//- ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-
 static int wt_chg_probe(struct platform_device *pdev)
 {
 	struct wt_chg *wt_chg = NULL;
@@ -3628,8 +2994,7 @@ static int wt_chg_probe(struct platform_device *pdev)
 	//+ ExtB oak-2318, tankaikun@wt, add 20220125, fix iic read/write return -13 when system suspend
 	mutex_init(&wt_chg->resume_complete_lock);
 	mutex_init(&wt_chg->battery_protect_lock);
-	//spin_lock_init(&wt_chg->ws_lock);
-	atomic_set(&wt_chg->pm_awake_active, 0);
+	spin_lock_init(&wt_chg->ws_lock);
 	wt_chg->main_chg_ws = wakeup_source_register(wt_chg->dev, "wt-chg");
 
 	if (!wt_chg->main_chg_ws)
@@ -3667,16 +3032,9 @@ static int wt_chg_probe(struct platform_device *pdev)
 	// ExtB oak-4542, tankaikun@wt, add 20220206, fix usb do not have diag port
 	wtchg_set_main_chg_usb_switch(wt_chg, 1);
 
-	// ExtB oak-4654, tankaikun@wt, add 20220328, power off charger ignore lcd on/off
-	wt_chg->power_off_charge_mode = get_boot_mode();
-
 	INIT_DELAYED_WORK(&wt_chg->wt_chg_work, wt_chg_main);
 	schedule_delayed_work(&wt_chg->wt_chg_work, 1000);
-
-	// ooakt-2581, xiejiaming.wt, mod, 20230307, fix hiz mode exit due to wt_chg period exec.
-	wt_chg->start_charging_test = true;
-
-	pr_err("wt_chg probe succeed ! version:0421\n");
+	pr_err("wt_chg probe succeed !\n");
 	return 0;
 
 cleanup:
@@ -3711,35 +3069,28 @@ static int wt_chg_remove(struct platform_device *pdev)
 static int wt_chg_resume(struct device *dev)
 {
 	struct wt_chg *wt_chg = dev_get_drvdata(dev);
-	//unsigned long flags;
+	unsigned long flags;
 	ktime_t now;
 
-	//spin_lock_irqsave(&wt_chg->ws_lock, flags);
-	if(!atomic_read(&wt_chg->pm_awake_active)){
-		if (wt_chg->main_chg_ws)
-			__pm_stay_awake(wt_chg->main_chg_ws);
-		atomic_set(&wt_chg->pm_awake_active, 1);
-	}
-	//spin_unlock_irqrestore(&wt_chg->ws_lock, flags);
-
 	now = ktime_get_boottime();
-	dev_err(wt_chg->dev, "wt_chg_resume enter now = %lld resume_time = %lld \n",
-					ktime_to_ms(now), ktime_to_ms(wt_chg->resume_main_work_time));
 
 	if(ktime_compare(now, wt_chg->resume_main_work_time)){
 		mutex_lock(&wt_chg->resume_complete_lock);
 		wt_chg->resume_completed = true;
 		mutex_unlock(&wt_chg->resume_complete_lock);
 
+		spin_lock_irqsave(&wt_chg->ws_lock, flags);
+		if(!atomic_read(&wt_chg->pm_awake_active)){
+			if (wt_chg->main_chg_ws)
+				__pm_stay_awake(wt_chg->main_chg_ws);
+			atomic_set(&wt_chg->pm_awake_active, 1);
+		}
+		spin_unlock_irqrestore(&wt_chg->ws_lock, flags);
+
+		dev_err(wt_chg->dev, "wt_chg_resume enter now = %lld \n", ktime_to_ms(now));
+
 		cancel_delayed_work_sync(&wt_chg->wt_chg_work);
 		schedule_delayed_work(&wt_chg->wt_chg_work, 0);
-	}else{
-		//spin_lock_irqsave(&wt_chg->ws_lock, flags);
-		if (wt_chg->main_chg_ws && atomic_read(&wt_chg->pm_awake_active)){
-			__pm_relax(wt_chg->main_chg_ws);
-			atomic_set(&wt_chg->pm_awake_active, 0);
-		}
-		//spin_unlock_irqrestore(&wt_chg->ws_lock, flags);
 	}
 
 	return 0;
@@ -3749,7 +3100,7 @@ static int wt_chg_suspend(struct device *dev)
 {
 	struct wt_chg *wt_chg = dev_get_drvdata(dev);
 
-	//dev_err(wt_chg->dev,"wt_chg_suspend \n");
+	dev_err(wt_chg->dev,"wt_chg_suspend \n");
 
 	mutex_lock(&wt_chg->resume_complete_lock);
 	wt_chg->resume_completed = false;

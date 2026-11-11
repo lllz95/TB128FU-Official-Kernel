@@ -18,7 +18,6 @@
 #include <asm/unaligned.h>
 #include <linux/delay.h>
 #include <linux/power_supply.h>
-#include <linux/hardware_info.h>
 #include "wt6670f_hvdcp30.h"
 
 #include <linux/of_gpio.h>
@@ -437,7 +436,6 @@ repeat_update:
     }
 	if(strcmp(READ_FW_CHECK,WT6670_FW) ==0){
 		dev_err(wt_chip->dev, "lsw %s: fw_read_check ok\n", __func__);
-		hardwareinfo_set_prop(HARDWARE_FAST_CHARGER_CONTROLLER_IC, "WT6670F,FW:0x05");
 	} else {
 		repeat_update_count++;
 		if(repeat_update_count<=3)
@@ -459,25 +457,8 @@ repeat_update:
 	return 0;
 update_fail:
 	dev_err(wt_chip->dev, "lsw_wt6670 [%s] ---- Program failed\n", __func__);
-	hardwareinfo_set_prop(HARDWARE_FAST_CHARGER_CONTROLLER_IC, "WT6670F,FW:null");
 	return -1;
 }
-
-//+ ExtB oak-9702, tankaikun@wt, add 20220509, fix adapter identify SDP | drop vbus to 5V
-static int wt6670f_soft_reset(struct wt6670f_info *wt_chip)
-{
-	int ret;
-	u8 reset_soft_buf[1] = {0x55};
-
-	pr_err("wt6670f_soft_reset \n");
-	ret = wt6670f_i2c_bulk_write(wt_chip, WT6670F_SOFT_RESET_CMD, reset_soft_buf, 1);
-	if (ret < 0) {
-		dev_err(wt_chip->dev, "lsw %s: reset soft fail: %d\n", __func__, ret);
-	}
-
-	return ret;
-}
-//- ExtB oak-9702, tankaikun@wt, add 20220509, fix adapter identify SDP | drop vbus to 5V
 
 #if 0
 static int wt6670f_enter_sleep_mode(struct wt6670f_info *wt_chip, bool en)
@@ -729,7 +710,6 @@ static int wt6670f_get_firmware_version(struct wt6670f_info *wt_chip)
 	int ret;
 	u8 reg;
 	bool single;
-	int i;
 
 	single = WT6670F_ONE_BYTE;
 	reg = WT6670F_FIRMWARE_VERSION_CMD;
@@ -739,30 +719,8 @@ static int wt6670f_get_firmware_version(struct wt6670f_info *wt_chip)
 		return ret;
 	}
 
-	//+ ExtB OAK-5856, tankaikun@wt, add 20220228, fix get 6670f version fail
-	if(WT6670_FW_VERSION != ret){
-		dev_err(wt_chip->dev, "%s:version check fail first firmware_version = 0x%x\n", __func__, ret);
-		// Quit from sleep mode
-		gpio_direction_output(wt_chip->reset_gpio, true);
-		mdelay(5);
-		gpio_direction_output(wt_chip->reset_gpio, false);
-		mdelay(50);
-
-		for(i=0; i<3; i++){
-			ret = wt6670f_i2c_read(wt_chip, reg, single);
-			if (ret < 0) {
-				dev_err(wt_chip->dev, "%s: fail: %d\n", __func__, ret);
-				return ret;
-			}
-			if(WT6670_FW_VERSION == ret)
-				break;
-			mdelay(5);
-		}
-	}
-	//- ExtB OAK-5856, tankaikun@wt, add 20220228, fix get 6670f version fail
-
 	wt_chip->firmware_version = ret;
-	dev_err(wt_chip->dev, "%s:firmware_version = 0x%x\n", __func__, ret);
+        dev_err(wt_chip->dev, "%s:firmware_version = 0x%x\n", __func__, ret);
 
 	return ret;
 }
@@ -825,33 +783,18 @@ static void wt6670f_charge_irq_workfunc(struct work_struct *work)
 	struct wt6670f_info *wt_chip = container_of(work,
 									struct wt6670f_info, irq_handle_work);
 	int ret;
-	bool  pd_active=0;
 	union power_supply_propval val = {0,};
-
-	//+ ExtB oak-9810,liangsuocheng.wt add 20220414 disable charging for pd protect
-	wt_chip->usb_psy = power_supply_get_by_name("usb");
-	if(wt_chip->usb_psy) {
-		ret = power_supply_get_property(wt_chip->usb_psy,
-								POWER_SUPPLY_PROP_PD_ACTIVE, &val);
-		if (ret < 0) {
-			dev_err(wt_chip->dev,
-					"Couldn't get power_supply_prop_PD_ACTIVE: ret = %d\n",  ret);
-			val.intval =0 ;
-		}
-		pd_active = (val.intval > 0  ? 1  :  0);
-	}
-	//- ExtB oak-9810,liangsuocheng.wt add 20220414 disable charging for pd protect
 
 	wt6670f_get_charger_type(wt_chip);
 	//+ ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
-	if(wt_chip->vbus_type == POWER_SUPPLY_TYPE_USB_FLOAT && wt_chip->float_charge_recheck_cnt++ < 3 && !pd_active){
-		pr_err(" wt6670f_charge_irq_workfunc rerun again \n");
-		msleep(100);
-		wt6670f_rerun_adsp(wt_chip);
-		return ;
+	if(wt_chip->vbus_type == POWER_SUPPLY_TYPE_USB_FLOAT && wt_chip->float_charge_recheck_cnt++ < 3){
+	   pr_err(" wt6670f_charge_irq_workfunc rerun again \n");
+	   msleep(100);
+	   wt6670f_rerun_adsp(wt_chip);
+	   return ;
 	}
 	//- ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
-
+	wt_chip->usb_psy = power_supply_get_by_name("usb");
 	if(wt_chip->usb_psy) {
 		val.intval = wt_chip->vbus_type;
 		ret = power_supply_set_property(wt_chip->usb_psy,
@@ -937,7 +880,6 @@ static enum power_supply_property wt6670f_usb_props[] = {
 	POWER_SUPPLY_PROP_HVDCP_OPTI_ALLOWED,
 	POWER_SUPPLY_PROP_APSD_RERUN,
 	POWER_SUPPLY_PROP_INPUT_VOLTAGE_SETTLED,
-	POWER_SUPPLY_PROP_SOFT_RESET,
 };
 
 static int wt6670f_usb_get_prop(struct power_supply *psy,
@@ -1003,9 +945,6 @@ static int wt6670f_usb_set_prop(struct power_supply *psy,
 		ret = wt6670f_set_hvdcp_mode(wt_chip, val->intval);
 		break;
 
-	case POWER_SUPPLY_PROP_SOFT_RESET:
-		ret = wt6670f_soft_reset(wt_chip);
-		break;
 	default:
 		dev_err(wt_chip->dev, "set prop: %d is not supported\n", psp);
 		ret = -EINVAL;
@@ -1024,7 +963,6 @@ static int wt6670f_usb_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_SETTLED:
 	case POWER_SUPPLY_PROP_HVDCP_OPTI_ALLOWED:
-	case POWER_SUPPLY_PROP_SOFT_RESET:
 		return 1;
 
 	default:
@@ -1107,22 +1045,30 @@ static int wt6670f_charge_probe(struct i2c_client *client,
 	wt_chip->vbus_volt_max = WT6670F_VBUS_SET_MAX;
 	wt_chip->float_charge_recheck_cnt = 0; // ExtB oak-3798, tankaikun@wt, add 20220126, fix plug in charger slowly cause identify float type
 
-	ret = wt6670f_init_usb_psy(wt_chip);
-	if (ret < 0) {
-		pr_err("Couldn't initialize usb psy rc=%d\n", ret);
-		goto err_mem;
-	}
-
 	i2c_set_clientdata(client, wt_chip);
 
 	ret = wt6670_parse_dt(wt_chip, &client->dev);
 	if (ret < 0)
 		return ret;
+		ret = wt6670f_init_usb_psy(wt_chip);
+	if (ret < 0) {
+		pr_err("Couldn't initialize usb psy rc=%d\n", ret);
+		goto err_mem;
+	}
+
+/* reset device to get proper working of fast charge */
+	gpio_direction_output(wt_chip->reset_gpio, true);
+	mdelay(5);
+	gpio_direction_output(wt_chip->reset_gpio, false);
+	mdelay(200);
+/* reset device to get proper working of fast charge */
+
+
+
 	if(wt6670f_get_firmware_version(wt_chip) != WT6670_FW_VERSION){
 		dev_err(wt_chip->dev, "lsw_wt6670 [%s] ---- FW_VERSION is not new,start to update!\n", __func__);
 		update_firmware(wt_chip);
 	} else {
-		hardwareinfo_set_prop(HARDWARE_FAST_CHARGER_CONTROLLER_IC, "WT6670F,FW:0x05");
 		dev_err(wt_chip->dev, "lsw_wt6670 [%s] ---- FW_VERSION is new,no need to update!\n", __func__);
 	}
 
@@ -1166,23 +1112,6 @@ static int wt6670f_charge_remove(struct i2c_client *client)
 	return 0;
 }
 
-//+ ExtB oak-9702, tankaikun@wt, add 20220509, fix adapter identify SDP | drop vbus to 5V
-static void wt6670f_charge_shutdown(struct i2c_client *client)
-{
-	struct wt6670f_info *wt_chip = i2c_get_clientdata(client);
-
-	if(POWER_SUPPLY_TYPE_USB_HVDCP_3 == wt_chip->vbus_type
-			|| POWER_SUPPLY_TYPE_USB_HVDCP_3P5== wt_chip->vbus_type){
-		if(wt_chip->current_volt > 9000){
-			wt6670f_request_adapter_voltage(wt_chip, WT6670F_VBUS_SET_MIN);
-			wt_chip->current_volt = 5000;
-			msleep(300);
-		}
-	}
-	cancel_delayed_work_sync(&wt_chip->monitor_work);
-}
-//- ExtB oak-9702, tankaikun@wt, add 20220509, fix adapter identify SDP | drop vbus to 5V
-
 static const struct i2c_device_id wt6670f_i2c_id_table[] = {
 	{ "wt6670f", WT6670F },
 	{},
@@ -1204,7 +1133,6 @@ static struct i2c_driver wt6670f_charge_i2c_driver = {
 	},
 	.probe = wt6670f_charge_probe,
 	.remove = wt6670f_charge_remove,
-	.shutdown   = wt6670f_charge_shutdown,
 	.id_table = wt6670f_i2c_id_table,
 };
 module_i2c_driver(wt6670f_charge_i2c_driver);
