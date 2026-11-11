@@ -2485,6 +2485,10 @@ static ssize_t show_get_charge_type(struct device *dev,
 		is_pd = 1;
 	else if (POWER_SUPPLY_TYPE_USB_FLOAT == chg->real_type)
 		is_pd = 2;
+	else if (POWER_SUPPLY_TYPE_USB_HVDCP_3 == chg->real_type
+		|| POWER_SUPPLY_TYPE_USB_HVDCP_3P5 == chg->real_type
+		|| POWER_SUPPLY_TYPE_USB_HVDCP == chg->real_type)
+		is_pd = 2;
 
 	return sprintf(buf, "%d\n", is_pd);
 }
